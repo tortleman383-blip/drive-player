@@ -1,0 +1,808 @@
+/* Wiring: load the library, tag it, draw it, and hook up the controls. */
+(function (global) {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  var els = {
+    setup: $('setup'), setupFolder: $('setup-folder'), setupKey: $('setup-key'),
+    setupGo: $('setup-go'), setupError: $('setup-error'),
+    app: $('app'), search: $('search'), refresh: $('btn-refresh'),
+    main: document.querySelector('.main'),
+    settings: $('btn-settings'), genres: $('genres'), status: $('status'),
+    list: $('tracklist'), empty: $('empty'),
+    npImg: $('np-img'), npTitle: $('np-title'), npArtist: $('np-artist'),
+    shuffle: $('btn-shuffle'), prev: $('btn-prev'), play: $('btn-play'),
+    next: $('btn-next'), repeat: $('btn-repeat'), repeatBadge: $('repeat-badge'),
+    playIcon: $('play-icon'), volIcon: $('vol-icon'),
+    timeNow: $('time-now'), timeTotal: $('time-total'), seek: $('seek'),
+    seekFill: $('seek-fill'), seekBuffer: $('seek-buffer'),
+    mute: $('btn-mute'), volume: $('volume'),
+    tagdlg: $('tagdlg'), tagdlgTitle: $('tagdlg-title'), tagdlgSub: $('tagdlg-sub'),
+    tagdlgTags: $('tagdlg-tags'), tagdlgCustom: $('tagdlg-custom'),
+    tagdlgSave: $('tagdlg-save'), tagdlgCancel: $('tagdlg-cancel'),
+    tagdlgReset: $('tagdlg-reset'),
+    setdlg: $('setdlg'), setFolder: $('set-folder'), setKey: $('set-key'),
+    setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
+    setImport: $('set-import'), setFile: $('set-file'), setClearCache: $('set-clearcache'),
+    toast: $('toast'), audio: $('audio')
+  };
+
+  var settings = Store.getSettings();
+  var player = new Player(els.audio);
+
+  var tracks = [];       // everything in the folder
+  var view = [];         // what the filter and search leave visible
+  var genre = settings.genre || 'All';
+  var query = '';
+  var editing = null;    // track open in the tag dialog
+
+  /* ---------- helpers ---------- */
+
+  function fmtTime(s) {
+    if (!isFinite(s) || s < 0) return '0:00';
+    var m = Math.floor(s / 60);
+    var sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    els.toast.textContent = msg;
+    els.toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { els.toast.hidden = true; }, 3200);
+  }
+
+  function setStatus(msg, isError) {
+    if (!msg) { els.status.hidden = true; return; }
+    els.status.textContent = msg;
+    els.status.className = 'status' + (isError ? ' error' : '');
+    els.status.hidden = false;
+  }
+
+  /* ---------- library ---------- */
+
+  function displayName(t) {
+    return t.title || Drive.parseFileName(t.fileName).title || t.fileName;
+  }
+
+  /* Fills in artist/title/tags from whatever we know so far: the ID3 tag if
+   * we have read it, the filename otherwise. */
+  function applyMetadata(track, meta) {
+    var guess = Drive.parseFileName(track.fileName);
+
+    track.title = (meta && meta.title) || guess.title || track.fileName;
+    track.artist = (meta && (meta.artist || meta.albumArtist)) || guess.artist || '';
+    track.album = (meta && meta.album) || '';
+    track.id3Genre = (meta && meta.genre) || '';
+    track.tagged = !!meta;
+
+    track.tags = Genres.orderTags(Genres.inferTags(track, Store.getOverride(track)));
+    track.custom = !!Store.getOverride(track);
+    track.haystack = [track.title, track.artist, track.album, track.fileName]
+      .join(' ').toLowerCase();
+  }
+
+  function buildTrack(file) {
+    var track = {
+      id: file.id,
+      fileName: file.fileName,
+      folder: file.folder,
+      size: file.size,
+      modifiedTime: file.modifiedTime,
+      url: Drive.streamUrl(file.id, settings.apiKey),
+      duration: 0,
+      dead: false
+    };
+
+    var cached = Store.cacheGet(file.id, file.modifiedTime);
+    applyMetadata(track, cached ? cached.meta : null);
+    if (cached) track.tagged = true;   // already inspected; do not re-fetch
+    if (cached && cached.duration) track.duration = cached.duration;
+    track.cachedArt = cached ? !!cached.art : false;
+
+    return track;
+  }
+
+  function loadLibrary() {
+    setStatus('Reading the folder…');
+    els.refresh.disabled = true;
+
+    return Drive.listTracks(settings.folderId, settings.apiKey, function (n) {
+      setStatus('Found ' + n + ' track' + (n === 1 ? '' : 's') + '…');
+    }).then(function (files) {
+      tracks = files.map(buildTrack);
+      els.refresh.disabled = false;
+
+      if (!tracks.length) {
+        setStatus('No audio files in that folder. Check the link, or that the ' +
+          'files are audio rather than shortcuts.', true);
+      } else {
+        setStatus('');
+      }
+
+      renderGenres();
+      applyFilter();
+      enrichAll();
+      return tracks;
+    }).catch(function (err) {
+      els.refresh.disabled = false;
+      setStatus(err.message || String(err), true);
+      throw err;
+    });
+  }
+
+  /* ---------- metadata enrichment ----------
+   * Read the head of each untagged file, a few at a time, and fold the ID3
+   * tag in as it arrives. Cached files are skipped, so this only costs
+   * anything the first time a library is opened. */
+
+  var enrichQueue = [];
+  var enrichActive = 0;
+  var ENRICH_CONCURRENCY = 4;
+  var redrawTimer = null;
+
+  function scheduleRedraw() {
+    if (redrawTimer) return;
+    redrawTimer = setTimeout(function () {
+      redrawTimer = null;
+      renderGenres();
+      applyFilter();
+    }, 400);
+  }
+
+  function enrichAll() {
+    enrichQueue = tracks.filter(function (t) { return !t.tagged; });
+    if (!enrichQueue.length) return;
+    for (var i = 0; i < ENRICH_CONCURRENCY; i++) enrichNext();
+  }
+
+  function enrichNext() {
+    if (!enrichQueue.length) {
+      if (enrichActive === 0) scheduleRedraw();
+      return;
+    }
+
+    var track = enrichQueue.shift();
+    enrichActive++;
+
+    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (buf) {
+      var meta = buf ? ID3.parse(buf) : null;
+      if (meta) {
+        applyMetadata(track, meta);
+        Store.cacheSet(track.id, {
+          modifiedTime: track.modifiedTime,
+          art: !!meta.picture,
+          meta: {
+            title: meta.title, artist: meta.artist, albumArtist: meta.albumArtist,
+            album: meta.album, genre: meta.genre
+          }
+        });
+        track.cachedArt = !!meta.picture;
+        scheduleRedraw();
+      } else {
+        // Remember that there is nothing to read, so a reload does not retry.
+        Store.cacheSet(track.id, { modifiedTime: track.modifiedTime, art: false, meta: null });
+        track.tagged = true;
+      }
+    }).catch(function () {
+      /* leave it on the filename guess */
+    }).then(function () {
+      enrichActive--;
+      enrichNext();
+    });
+  }
+
+  /* ---------- artwork ----------
+   * Pulled on demand for the track being played, with a small cache, so a
+   * big library does not sit on a pile of decoded images. */
+
+  var artCache = {};
+  var artOrder = [];
+
+  function showArtwork(url) {
+    if (url) {
+      els.npImg.src = url;
+      els.npImg.hidden = false;
+    } else {
+      els.npImg.removeAttribute('src');
+      els.npImg.hidden = true;
+    }
+  }
+
+  function loadArtwork(track) {
+    if (artCache[track.id]) {
+      track.artworkUrl = artCache[track.id];
+      showArtwork(track.artworkUrl);
+      player.updateMediaSession(track);
+      return;
+    }
+
+    showArtwork(null);
+    if (track.cachedArt === false && track.tagged) return;
+
+    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (buf) {
+      var meta = buf ? ID3.parse(buf) : null;
+      if (!meta || !meta.picture) return;
+
+      var blob = new Blob([meta.picture.data], { type: meta.picture.mime });
+      var url = URL.createObjectURL(blob);
+
+      artCache[track.id] = url;
+      artOrder.push(track.id);
+      while (artOrder.length > 20) {
+        var old = artOrder.shift();
+        URL.revokeObjectURL(artCache[old]);
+        delete artCache[old];
+      }
+
+      var np = player.nowPlaying();
+      if (np && np.id === track.id) {
+        track.artworkUrl = url;
+        showArtwork(url);
+        player.updateMediaSession(track);
+      }
+    }).catch(function () {});
+  }
+
+  /* ---------- filtering ---------- */
+
+  function matches(track) {
+    if (genre !== 'All' && track.tags.indexOf(genre) === -1) return false;
+    if (query && track.haystack.indexOf(query) === -1) return false;
+    return true;
+  }
+
+  function applyFilter() {
+    view = tracks.filter(matches);
+    player.setQueue(view);
+    renderList();
+  }
+
+  function genreCounts() {
+    var counts = {};
+    tracks.forEach(function (t) {
+      t.tags.forEach(function (tag) { counts[tag] = (counts[tag] || 0) + 1; });
+    });
+    return counts;
+  }
+
+  function renderGenres() {
+    var counts = genreCounts();
+
+    // Taxonomy order first, then anything the listener invented, and only
+    // genres that something is actually tagged with.
+    var known = Genres.TAXONOMY.filter(function (g) { return counts[g]; });
+    var extra = Object.keys(counts).filter(function (g) {
+      return Genres.TAXONOMY.indexOf(g) === -1;
+    }).sort();
+
+    var list = ['All'].concat(known, extra);
+    if (list.indexOf(genre) === -1) genre = 'All';
+
+    els.genres.textContent = '';
+    list.forEach(function (g) {
+      var b = document.createElement('button');
+      b.className = 'chip' + (g === genre ? ' on' : '');
+      b.type = 'button';
+      b.textContent = g;
+
+      var n = g === 'All' ? tracks.length : counts[g];
+      var count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = n;
+      b.appendChild(count);
+
+      b.addEventListener('click', function () {
+        genre = g;
+        Store.saveSettings({ genre: g });
+        renderGenres();
+        applyFilter();
+        els.main.scrollTop = 0;
+      });
+
+      els.genres.appendChild(b);
+    });
+  }
+
+  function renderList() {
+    var current = player.nowPlaying();
+    var scroll = els.main.scrollTop;
+    els.list.textContent = '';
+    els.empty.hidden = view.length > 0;
+
+    var frag = document.createDocumentFragment();
+
+    view.forEach(function (track, i) {
+      var li = document.createElement('li');
+      li.className = 'track';
+      if (current && current.id === track.id) li.className += ' playing';
+      if (track.dead) li.className += ' dead';
+
+      var num = document.createElement('div');
+      num.className = 'track-num';
+      num.textContent = i + 1;
+
+      var main = document.createElement('div');
+      main.className = 'track-main';
+
+      var title = document.createElement('div');
+      title.className = 'track-title';
+      title.textContent = displayName(track);
+
+      var artist = document.createElement('div');
+      artist.className = 'track-artist';
+      artist.textContent = track.artist || 'Unknown artist';
+
+      main.appendChild(title);
+      main.appendChild(artist);
+
+      var tags = document.createElement('div');
+      tags.className = 'track-tags';
+
+      var shown = track.tags.slice(0, 2);
+      shown.forEach(function (tag) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tag' + (tag === 'Unsorted' ? ' unsorted' : '');
+        b.textContent = tag;
+        b.title = 'Edit genres for this track';
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openTagDialog(track);
+        });
+        tags.appendChild(b);
+      });
+
+      if (track.tags.length > shown.length) {
+        var more = document.createElement('span');
+        more.className = 'tag more';
+        more.textContent = '+' + (track.tags.length - shown.length);
+        tags.appendChild(more);
+      }
+
+      var dur = document.createElement('div');
+      dur.className = 'track-dur';
+      dur.textContent = track.duration ? fmtTime(track.duration) : '';
+
+      li.appendChild(num);
+      li.appendChild(main);
+      li.appendChild(tags);
+      li.appendChild(dur);
+
+      li.addEventListener('click', function () { player.playIndex(i); });
+      frag.appendChild(li);
+    });
+
+    els.list.appendChild(frag);
+    els.main.scrollTop = scroll;   // redraws during tagging must not jump
+  }
+
+  function highlightPlaying() {
+    var current = player.nowPlaying();
+    var rows = els.list.children;
+    for (var i = 0; i < rows.length; i++) {
+      var isIt = current && view[i] && view[i].id === current.id;
+      rows[i].classList.toggle('playing', !!isIt);
+    }
+  }
+
+  /* ---------- transport UI ---------- */
+
+  function renderNowPlaying(track) {
+    if (!track) {
+      els.npTitle.textContent = 'Nothing playing';
+      els.npArtist.textContent = 'Pick a track, or hit shuffle';
+      showArtwork(null);
+      return;
+    }
+    els.npTitle.textContent = displayName(track);
+    els.npArtist.textContent = [track.artist || 'Unknown artist']
+      .concat(track.tags.length ? track.tags.join(' · ') : [])
+      .join(' — ');
+    loadArtwork(track);
+  }
+
+  function renderState() {
+    var paused = els.audio.paused;
+    els.playIcon.setAttribute('href', paused ? '#i-play' : '#i-pause');
+    els.play.title = paused ? 'Play (Space)' : 'Pause (Space)';
+
+    els.shuffle.classList.toggle('on', player.shuffle);
+    els.repeat.classList.toggle('on', player.repeat !== 'off');
+    els.repeatBadge.hidden = player.repeat !== 'one';
+
+    var muted = els.audio.muted || els.audio.volume === 0;
+    els.volIcon.setAttribute('href', muted ? '#i-mute' : '#i-volume');
+    els.volume.value = els.audio.muted ? 0 : els.audio.volume;
+  }
+
+  function renderTime() {
+    var a = els.audio;
+    var d = isFinite(a.duration) ? a.duration : 0;
+    var pct = d ? (a.currentTime / d) * 100 : 0;
+
+    els.seekFill.style.width = pct + '%';
+    els.timeNow.textContent = fmtTime(a.currentTime);
+    els.timeTotal.textContent = fmtTime(d);
+    els.seek.setAttribute('aria-valuenow', Math.round(pct));
+
+    var buffered = 0;
+    if (a.buffered.length && d) buffered = (a.buffered.end(a.buffered.length - 1) / d) * 100;
+    els.seekBuffer.style.width = buffered + '%';
+
+    // Duration is only known once the file loads; keep it for the list.
+    var track = player.nowPlaying();
+    if (track && d && !track.duration) {
+      track.duration = d;
+      Store.cacheSet(track.id, { modifiedTime: track.modifiedTime, duration: d });
+      scheduleRedraw();
+    }
+  }
+
+  /* ---------- tag dialog ---------- */
+
+  function openTagDialog(track) {
+    editing = track;
+    els.tagdlgTitle.textContent = displayName(track);
+    els.tagdlgSub.textContent = (track.artist || 'Unknown artist') +
+      (track.custom ? ' · edited by you' : ' · auto-tagged');
+
+    var selected = track.tags.slice();
+    els.tagdlgTags.textContent = '';
+
+    Genres.TAXONOMY.forEach(function (g) {
+      if (g === 'Unsorted') return;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip' + (selected.indexOf(g) !== -1 ? ' on' : '');
+      b.textContent = g;
+      b.addEventListener('click', function () {
+        var at = selected.indexOf(g);
+        if (at === -1) selected.push(g); else selected.splice(at, 1);
+        b.classList.toggle('on', at === -1);
+      });
+      els.tagdlgTags.appendChild(b);
+    });
+
+    els.tagdlgCustom.value = selected.filter(function (g) {
+      return Genres.TAXONOMY.indexOf(g) === -1;
+    }).join(', ');
+
+    els.tagdlg._selected = selected;
+    els.tagdlg.hidden = false;
+  }
+
+  function closeTagDialog() {
+    els.tagdlg.hidden = true;
+    editing = null;
+  }
+
+  els.tagdlgSave.addEventListener('click', function () {
+    if (!editing) return closeTagDialog();
+
+    var selected = els.tagdlg._selected.filter(function (g) {
+      return Genres.TAXONOMY.indexOf(g) !== -1;
+    });
+
+    els.tagdlgCustom.value.split(',').forEach(function (raw) {
+      var t = raw.trim();
+      if (t && selected.indexOf(t) === -1) selected.push(t);
+    });
+
+    Store.setOverride(editing, selected);
+    var cached = Store.cacheGet(editing.id, editing.modifiedTime);
+    applyMetadata(editing, cached ? cached.meta : null);
+
+    closeTagDialog();
+    renderGenres();
+    applyFilter();
+    renderNowPlaying(player.nowPlaying());
+  });
+
+  els.tagdlgReset.addEventListener('click', function () {
+    if (!editing) return closeTagDialog();
+    Store.setOverride(editing, null);
+    var cached = Store.cacheGet(editing.id, editing.modifiedTime);
+    applyMetadata(editing, cached ? cached.meta : null);
+    closeTagDialog();
+    renderGenres();
+    applyFilter();
+  });
+
+  els.tagdlgCancel.addEventListener('click', closeTagDialog);
+
+  /* ---------- settings dialog ---------- */
+
+  function openSettings() {
+    els.setFolder.value = settings.folderId;
+    els.setKey.value = settings.apiKey;
+    els.setdlg.hidden = false;
+  }
+
+  els.settings.addEventListener('click', openSettings);
+  els.setCancel.addEventListener('click', function () { els.setdlg.hidden = true; });
+
+  els.setSave.addEventListener('click', function () {
+    var folderId = Drive.folderIdFrom(els.setFolder.value);
+    var apiKey = els.setKey.value.trim();
+
+    if (!folderId || !apiKey) { toast('Need both a folder and a key.'); return; }
+
+    var changed = folderId !== settings.folderId;
+    settings = Store.saveSettings({ folderId: folderId, apiKey: apiKey });
+    els.setdlg.hidden = true;
+
+    if (changed) Store.clearCache();
+    loadLibrary().catch(function () {});
+  });
+
+  els.setClearCache.addEventListener('click', function () {
+    Store.clearCache();
+    toast('Metadata cache cleared. Reloading…');
+    loadLibrary().catch(function () {});
+  });
+
+  els.setExport.addEventListener('click', function () {
+    var blob = new Blob([JSON.stringify(Store.getOverrides(), null, 2)],
+      { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'drive-player-genres.json';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  els.setImport.addEventListener('click', function () { els.setFile.click(); });
+
+  els.setFile.addEventListener('change', function () {
+    var file = els.setFile.files[0];
+    if (!file) return;
+
+    file.text().then(function (text) {
+      var map = JSON.parse(text);
+      if (!map || typeof map !== 'object') throw new Error('not an object');
+      Store.replaceOverrides(map);
+
+      tracks.forEach(function (t) {
+        var cached = Store.cacheGet(t.id, t.modifiedTime);
+        applyMetadata(t, cached ? cached.meta : null);
+      });
+
+      renderGenres();
+      applyFilter();
+      toast('Imported ' + Object.keys(map).length + ' genre edits.');
+    }).catch(function () {
+      toast('That file did not look like an export.');
+    });
+
+    els.setFile.value = '';
+  });
+
+  /* ---------- transport wiring ---------- */
+
+  els.play.addEventListener('click', function () { player.toggle(); });
+  els.prev.addEventListener('click', function () { player.prev(); });
+  els.next.addEventListener('click', function () { player.next(); });
+
+  els.shuffle.addEventListener('click', function () {
+    player.setShuffle(!player.shuffle);
+    Store.saveSettings({ shuffle: player.shuffle });
+    toast(player.shuffle ? 'Shuffle on' : 'Shuffle off');
+  });
+
+  els.repeat.addEventListener('click', function () {
+    var order = ['all', 'one', 'off'];
+    var mode = order[(order.indexOf(player.repeat) + 1) % order.length];
+    player.setRepeat(mode);
+    Store.saveSettings({ repeat: mode });
+    toast(mode === 'one' ? 'Repeat one' : mode === 'all' ? 'Repeat all' : 'Repeat off');
+  });
+
+  els.volume.addEventListener('input', function () {
+    els.audio.muted = false;
+    player.setVolume(parseFloat(els.volume.value));
+    Store.saveSettings({ volume: els.audio.volume });
+  });
+
+  els.mute.addEventListener('click', function () {
+    els.audio.muted = !els.audio.muted;
+    renderState();
+  });
+
+  els.search.addEventListener('input', function () {
+    query = els.search.value.trim().toLowerCase();
+    applyFilter();
+  });
+
+  els.refresh.addEventListener('click', function () { loadLibrary().catch(function () {}); });
+
+  /* Seeking: pointer drag anywhere on the bar, plus arrow keys when focused. */
+  function seekFromEvent(e) {
+    var rect = els.seek.getBoundingClientRect();
+    var ratio = (e.clientX - rect.left) / rect.width;
+    ratio = Math.max(0, Math.min(1, ratio));
+    if (isFinite(els.audio.duration)) player.seek(ratio * els.audio.duration);
+  }
+
+  els.seek.addEventListener('pointerdown', function (e) {
+    els.seek.setPointerCapture(e.pointerId);
+    seekFromEvent(e);
+    var move = function (ev) { seekFromEvent(ev); };
+    var up = function () {
+      els.seek.removeEventListener('pointermove', move);
+      els.seek.removeEventListener('pointerup', up);
+    };
+    els.seek.addEventListener('pointermove', move);
+    els.seek.addEventListener('pointerup', up);
+  });
+
+  els.seek.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight') { player.nudge(5); e.preventDefault(); }
+    if (e.key === 'ArrowLeft') { player.nudge(-5); e.preventDefault(); }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    var typing = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+
+    if (e.key === 'Escape') {
+      if (!els.tagdlg.hidden) closeTagDialog();
+      else if (!els.setdlg.hidden) els.setdlg.hidden = true;
+      else if (typing) e.target.blur();
+      return;
+    }
+
+    if (e.key === '/' && !typing) { e.preventDefault(); els.search.focus(); return; }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+    switch (e.key) {
+      case ' ': e.preventDefault(); player.toggle(); break;
+      case 'ArrowRight': e.preventDefault(); e.shiftKey ? player.next() : player.nudge(5); break;
+      case 'ArrowLeft': e.preventDefault(); e.shiftKey ? player.prev() : player.nudge(-5); break;
+      case 'ArrowUp': e.preventDefault(); player.setVolume(els.audio.volume + 0.05); break;
+      case 'ArrowDown': e.preventDefault(); player.setVolume(els.audio.volume - 0.05); break;
+      case 's': case 'S': els.shuffle.click(); break;
+      case 'l': case 'L': els.repeat.click(); break;
+      case 'm': case 'M': els.mute.click(); break;
+      case 'n': case 'N': player.next(); break;
+      case 'p': case 'P': player.prev(); break;
+    }
+  });
+
+  /* ---------- player events ---------- */
+
+  player.on('change', function (track) {
+    renderNowPlaying(track);
+    highlightPlaying();
+    document.title = displayName(track) + ' — Drive Player';
+  });
+
+  player.on('state', renderState);
+  player.on('time', renderTime);
+  player.on('queue', highlightPlaying);
+
+  /* The <audio> element only ever reports "something went wrong". Ask Drive
+   * directly what happened, once, and put the real answer on screen. */
+  var diagnosing = false;
+  var diagnosed = false;
+
+  function diagnose(track) {
+    if (diagnosing || diagnosed) return;
+    diagnosing = true;
+
+    var mediaError = els.audio.error ? els.audio.error.code : 0;
+
+    Drive.probe(track.id, settings.apiKey).then(function (result) {
+      diagnosing = false;
+      diagnosed = true;
+
+      if (!result.ok) {
+        setStatus(result.message, true);
+        return;
+      }
+
+      // Drive handed over the bytes, so the file is reachable and the key is
+      // fine - this browser just cannot play the format.
+      var name = track.fileName || displayName(track);
+      if (mediaError === 3 || mediaError === 4) {
+        setStatus('Drive is serving these files fine, but this browser cannot ' +
+          'decode them. "' + name + '" is in a format it does not support — ' +
+          'WMA, ALAC and some M4A files do this. Converting the library to MP3 ' +
+          'or AAC fixes it.', true);
+      } else {
+        setStatus('Playback of "' + name + '" failed even though Drive served ' +
+          'the file. Try reloading; if every track does this, the audio format ' +
+          'is probably the problem.', true);
+      }
+    });
+  }
+
+  player.on('error', function (track) {
+    track.dead = true;
+    toast('Could not play "' + displayName(track) + '" — skipping.');
+    scheduleRedraw();
+    diagnose(track);
+  });
+
+  player.on('stalled', function () {
+    if (!diagnosed) {
+      setStatus('Nothing will play. Working out why…', true);
+    }
+  });
+
+  // A track that plays clears the diagnosis, so a single bad file does not
+  // leave a permanent banner.
+  els.audio.addEventListener('playing', function () {
+    diagnosed = false;
+    if (els.status.classList.contains('error')) setStatus('');
+  });
+
+  /* ---------- boot ---------- */
+
+  function startApp() {
+    els.setup.hidden = true;
+    els.app.hidden = false;
+
+    player.shuffle = !!settings.shuffle;
+    player.repeat = settings.repeat || 'all';
+    els.audio.volume = typeof settings.volume === 'number' ? settings.volume : 0.8;
+    els.volume.value = els.audio.volume;
+    renderState();
+
+    loadLibrary().catch(function () {});
+  }
+
+  els.setupGo.addEventListener('click', function () {
+    var folderId = Drive.folderIdFrom(els.setupFolder.value);
+    var apiKey = els.setupKey.value.trim();
+
+    if (!folderId) {
+      els.setupError.textContent = 'That does not look like a Drive folder link.';
+      els.setupError.hidden = false;
+      return;
+    }
+    if (!apiKey) {
+      els.setupError.textContent = 'Paste an API key to continue.';
+      els.setupError.hidden = false;
+      return;
+    }
+
+    settings = Store.saveSettings({ folderId: folderId, apiKey: apiKey });
+    els.setupError.hidden = true;
+    startApp();
+  });
+
+  els.setupKey.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') els.setupGo.click();
+  });
+
+  /* A folder can be handed to the page in its own URL - "#folder=<id>", or
+   * the whole Drive link - so a bookmark opens ready to go. It lives in the
+   * fragment rather than the page source: when this is hosted somewhere
+   * public, the id of a link-shared folder is the only thing standing between
+   * a stranger and the music, and the fragment is never sent to a server.
+   * Keys are never read from the URL. */
+  function folderFromLocation() {
+    var query = (location.hash || '').replace(/^#/, '') ||
+                (location.search || '').replace(/^\?/, '');
+    var match = query.match(/(?:^|&)folder=([^&]*)/);
+    if (!match) return '';
+    try {
+      return Drive.folderIdFrom(decodeURIComponent(match[1]));
+    } catch (e) {
+      return '';
+    }
+  }
+
+  if (settings.apiKey && settings.folderId) {
+    startApp();
+  } else {
+    els.setupFolder.value = settings.folderId || folderFromLocation();
+    els.setup.hidden = false;
+    (els.setupFolder.value ? els.setupKey : els.setupFolder).focus();
+  }
+
+  global.DrivePlayer = { player: player, tracks: function () { return tracks; } };
+})(window);

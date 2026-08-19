@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Drive Player</title>
+<link rel="stylesheet" href="css/player.css">
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.2v14H7zM13.8 5H17v14h-3.2z"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M7 6h2.3v12H7zm3.6 6L20 6.2v11.6z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M14.7 6H17v12h-2.3zm-1.3 6L4 17.8V6.2z"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M17 4l4 3.5-4 3.5V9h-2.1c-1 0-1.6.4-2.3 1.4l-.8 1.2-1.4-2 .6-.9C12.1 7 13.3 6.4 15 6.4H17zm0 9.5l4 3.5-4 3.5v-2h-2c-1.7 0-2.9-.6-4-2.1l-3-4.3c-.7-1-1.3-1.4-2.3-1.4H3V8.8h2.7c1.7 0 2.9.6 4 2.1l3 4.3c.7 1 1.3 1.4 2.3 1.4H17zM3 15.2h2.7c.8 0 1.3-.2 1.8-.8l.5-.7 1.4 2-.3.4c-.9 1.1-2 1.6-3.4 1.6H3z"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M7 7h10v2.5L21 6l-4-3.5V5H5v6h2zm10 10H7v-2.5L3 18l4 3.5V19h12v-6h-2z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.2L12 5.2v13.6L7.2 14.5H4zM15.5 8.4a5 5 0 010 7.2l1.3 1.4a7 7 0 000-10z"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.2L12 5.2v13.6L7.2 14.5H4zm13.9 2.5l2.4-2.4-1.3-1.3-2.4 2.4-2.4-2.4-1.3 1.3 2.4 2.4-2.4 2.4 1.3 1.3 2.4-2.4 2.4 2.4 1.3-1.3z"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M10 18.5a2.8 2.8 0 11-2-2.7V6.6l10-2.1v9.9a2.8 2.8 0 11-2-2.7V6.9l-6 1.3z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M12 5V2L8 5.5 12 9V6a6 6 0 11-6 6H4a8 8 0 108-8z"/></symbol>
+  <symbol id="i-cog" viewBox="0 0 24 24"><path d="M12 8.6a3.4 3.4 0 100 6.8 3.4 3.4 0 000-6.8zm8.5 3.4c0 .5 0 1-.1 1.4l2 1.6-2 3.4-2.4-1a7.7 7.7 0 01-2.4 1.4l-.4 2.6h-4l-.4-2.6a7.7 7.7 0 01-2.4-1.4l-2.4 1-2-3.4 2-1.6a8.5 8.5 0 010-2.8l-2-1.6 2-3.4 2.4 1a7.7 7.7 0 012.4-1.4L10.8 2h4l.4 2.6a7.7 7.7 0 012.4 1.4l2.4-1 2 3.4-2 1.6c.1.4.1.9.1 1.4z"/></symbol>
+</svg>
+
+<!-- First run: no API key yet. -->
+<div id="setup" class="setup" hidden>
+  <div class="setup-card">
+    <h1>Drive Player</h1>
+    <p class="setup-lede">
+      This page reads a shared Google Drive folder straight from your browser.
+      Nothing is uploaded anywhere, and the key below is stored only on this
+      device.
+    </p>
+
+    <label class="field">
+      <span>Shared folder link or ID</span>
+      <input id="setup-folder" type="text" spellcheck="false"
+             placeholder="https://drive.google.com/drive/folders/...">
+    </label>
+
+    <label class="field">
+      <span>Google API key</span>
+      <input id="setup-key" type="password" spellcheck="false"
+             autocomplete="off" placeholder="AIza...">
+    </label>
+
+    <details class="setup-help">
+      <summary>How to get an API key (2 minutes, free)</summary>
+      <ol>
+        <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">console.cloud.google.com</a> and create a project.</li>
+        <li>In <b>APIs &amp; Services → Library</b>, search for <b>Google Drive API</b> and enable it.</li>
+        <li>In <b>APIs &amp; Services → Credentials</b>, choose <b>Create credentials → API key</b>.</li>
+        <li>Optional but sensible: <b>Restrict key</b> → API restrictions → Google Drive API only.</li>
+        <li>Paste the key above. Make sure the folder is shared as <b>Anyone with the link</b>.</li>
+      </ol>
+    </details>
+
+    <p id="setup-error" class="setup-error" hidden></p>
+    <button id="setup-go" class="primary">Load library</button>
+  </div>
+</div>
+
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <div class="brand"><svg class="icon"><use href="#i-note"></use></svg><span>Drive Player</span></div>
+    <input id="search" class="search" type="search" placeholder="Search title, artist, album…"
+           spellcheck="false" autocomplete="off">
+    <button id="btn-refresh" class="icon-btn" title="Reload from Drive (R)">
+      <svg class="icon"><use href="#i-refresh"></use></svg>
+    </button>
+    <button id="btn-settings" class="icon-btn" title="Settings">
+      <svg class="icon"><use href="#i-cog"></use></svg>
+    </button>
+  </header>
+
+  <nav id="genres" class="genrebar" aria-label="Filter by genre"></nav>
+
+  <main class="main">
+    <div id="status" class="status" hidden></div>
+    <ol id="tracklist" class="tracklist"></ol>
+    <p id="empty" class="empty" hidden>Nothing here. Try another genre or clear the search.</p>
+  </main>
+
+  <footer class="nowplaying">
+    <div class="np-art">
+      <img id="np-img" alt="" hidden>
+      <svg class="icon placeholder"><use href="#i-note"></use></svg>
+    </div>
+
+    <div class="np-meta">
+      <div id="np-title" class="np-title">Nothing playing</div>
+      <div id="np-artist" class="np-artist">Pick a track, or hit shuffle</div>
+    </div>
+
+    <div class="np-controls">
+      <button id="btn-shuffle" class="icon-btn" title="Shuffle (S)">
+        <svg class="icon"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button id="btn-prev" class="icon-btn" title="Previous (Shift+←)">
+        <svg class="icon"><use href="#i-prev"></use></svg>
+      </button>
+      <button id="btn-play" class="icon-btn play" title="Play / pause (Space)">
+        <svg class="icon"><use id="play-icon" href="#i-play"></use></svg>
+      </button>
+      <button id="btn-next" class="icon-btn" title="Next (Shift+→)">
+        <svg class="icon"><use href="#i-next"></use></svg>
+      </button>
+      <button id="btn-repeat" class="icon-btn" title="Repeat (L)">
+        <svg class="icon"><use href="#i-repeat"></use></svg>
+        <span id="repeat-badge" class="badge" hidden>1</span>
+      </button>
+    </div>
+
+    <div class="np-seek">
+      <span id="time-now" class="time">0:00</span>
+      <div id="seek" class="seek" role="slider" tabindex="0"
+           aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="seek-track"><div id="seek-buffer" class="seek-buffer"></div><div id="seek-fill" class="seek-fill"></div></div>
+      </div>
+      <span id="time-total" class="time">0:00</span>
+    </div>
+
+    <div class="np-volume">
+      <button id="btn-mute" class="icon-btn" title="Mute (M)">
+        <svg class="icon"><use id="vol-icon" href="#i-volume"></use></svg>
+      </button>
+      <input id="volume" class="volume" type="range" min="0" max="1" step="0.01" aria-label="Volume">
+    </div>
+  </footer>
+</div>
+
+<!-- Genre editor -->
+<div id="tagdlg" class="dialog" hidden>
+  <div class="dialog-card">
+    <h2 id="tagdlg-title">Tags</h2>
+    <p class="dialog-sub" id="tagdlg-sub"></p>
+    <div id="tagdlg-tags" class="tagpick"></div>
+    <label class="field">
+      <span>Add your own, comma separated</span>
+      <input id="tagdlg-custom" type="text" spellcheck="false" placeholder="Shoegaze, Late night">
+    </label>
+    <div class="dialog-actions">
+      <button id="tagdlg-reset" class="ghost">Back to auto</button>
+      <button id="tagdlg-cancel" class="ghost">Cancel</button>
+      <button id="tagdlg-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings -->
+<div id="setdlg" class="dialog" hidden>
+  <div class="dialog-card">
+    <h2>Settings</h2>
+    <label class="field">
+      <span>Shared folder link or ID</span>
+      <input id="set-folder" type="text" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Google API key</span>
+      <input id="set-key" type="password" spellcheck="false" autocomplete="off">
+    </label>
+    <p class="dialog-sub">
+      Genre edits live on this device. Export them to keep a copy, or to move
+      them to another browser.
+    </p>
+    <div class="dialog-actions wrap">
+      <button id="set-export" class="ghost">Export genres</button>
+      <button id="set-import" class="ghost">Import genres</button>
+      <button id="set-clearcache" class="ghost">Clear metadata cache</button>
+      <input id="set-file" type="file" accept="application/json,.json" hidden>
+    </div>
+    <div class="dialog-actions">
+      <button id="set-cancel" class="ghost">Cancel</button>
+      <button id="set-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<audio id="audio" preload="metadata"></audio>
+
+<script src="js/genres.js"></script>
+<script src="js/id3.js"></script>
+<script src="js/store.js"></script>
+<script src="js/drive.js"></script>
+<script src="js/player.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
