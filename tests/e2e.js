@@ -24,6 +24,7 @@ try {
 
 var FOLDER = '15IttG5K1ruTgzxWlLKOvDFZwS4ux1pmE';
 var SUBFOLDER = 'sub-deep-cuts';
+var ARTIST_FOLDER = 'sub-tame-impala';
 
 var FILES = {};
 FILES[FOLDER] = [
@@ -36,10 +37,14 @@ FILES[FOLDER] = [
   { id: 'f8', name: 'Borderline - Tame Impala.mp3', mimeType: 'audio/mpeg' },  // title first
 
   { id: 'img', name: 'cover.jpg', mimeType: 'image/jpeg' },
-  { id: SUBFOLDER, name: 'Deep Cuts', mimeType: 'application/vnd.google-apps.folder' }
+  { id: SUBFOLDER, name: 'Deep Cuts', mimeType: 'application/vnd.google-apps.folder' },
+  { id: ARTIST_FOLDER, name: 'Tame Impala', mimeType: 'application/vnd.google-apps.folder' }
 ];
 FILES[SUBFOLDER] = [
   { id: 'f6', name: 'Boards of Canada - Roygbiv.mp3', mimeType: 'audio/mpeg' }
+];
+FILES[ARTIST_FOLDER] = [
+  { id: 'f9', name: 'Elephant.mp3', mimeType: 'audio/mpeg' }   // bare title
 ];
 
 // Only f5 carries a tag; everything else has to be read off its filename.
@@ -242,7 +247,7 @@ async function main() {
     var titles = await page.$$eval('.track-title', function (els) {
       return els.map(function (e) { return e.textContent; });
     });
-    assert.strictEqual(titles.length, 8, 'expected 8 tracks, got ' + titles.length + ': ' + titles);
+    assert.strictEqual(titles.length, 9, 'expected 9 tracks, got ' + titles.length + ': ' + titles);
     assert.ok(titles.some(function (t) { return /Roygbiv/.test(t); }), 'subfolder track missing');
     assert.ok(!titles.some(function (t) { return /cover/i.test(t); }), 'image was listed');
   });
@@ -275,6 +280,26 @@ async function main() {
     assert.strictEqual(row.artist, 'Tame Impala',
       'title-first filename not flipped: ' + JSON.stringify(row));
   });
+
+  await step('a bare title in an artist-named folder is credited to that artist',
+    async function () {
+      var row = await page.$$eval('.track', function (els) {
+        return els.map(function (e) {
+          return {
+            title: e.querySelector('.track-title').textContent,
+            artist: e.querySelector('.track-artist').textContent,
+            tags: Array.prototype.map.call(e.querySelectorAll('.tag'),
+              function (t) { return t.textContent; })
+          };
+        }).filter(function (r) { return r.title === 'Elephant'; })[0];
+      });
+
+      assert.ok(row, 'Elephant not listed');
+      assert.strictEqual(row.artist, 'Tame Impala',
+        'folder name not used as the artist: ' + JSON.stringify(row));
+      assert.ok(row.tags.indexOf('Unsorted') === -1,
+        'still untagged despite a known artist: ' + JSON.stringify(row));
+    });
 
   await step('ID3 tags replace the filename guess once they are read', async function () {
     await page.waitForFunction(function () {
@@ -317,7 +342,7 @@ async function main() {
   await step('All brings everything back', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 8;
+      return document.querySelectorAll('#tracklist .track').length === 9;
     });
   });
 
@@ -330,7 +355,7 @@ async function main() {
     });
     await page.fill('#search', '');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 8;
+      return document.querySelectorAll('#tracklist .track').length === 9;
     });
   });
 
@@ -404,8 +429,8 @@ async function main() {
       });
       var unique = {};
       order.forEach(function (i) { unique[i] = true; });
-      assert.strictEqual(order.length, 8, 'order length ' + order.length);
-      assert.strictEqual(Object.keys(unique).length, 8, 'shuffle dropped or repeated entries');
+      assert.strictEqual(order.length, 9, 'order length ' + order.length);
+      assert.strictEqual(Object.keys(unique).length, 9, 'shuffle dropped or repeated entries');
     });
 
   /* ---- tagging ---- */
@@ -456,7 +481,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 8;
+      return document.querySelectorAll('#tracklist .track').length === 9;
     });
 
     var chips = await page.$$eval('#genres .chip', function (els) {
@@ -550,6 +575,72 @@ async function main() {
       await ctx2.close();
     });
 
+  await step('a refused download is not remembered as "this file has no tag"',
+    async function () {
+      var ctxA = await browser.newContext();
+      var refuse = true;
+
+      await ctxA.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
+        var url = new URL(route.request().url());
+
+        if (url.searchParams.get('alt') === 'media') {
+          if (refuse) {
+            return route.fulfill({
+              status: 403,
+              contentType: 'application/json',
+              headers: { 'Access-Control-Allow-Origin': '*' },
+              body: JSON.stringify({ error: { code: 403, message: 'nope' } })
+            });
+          }
+          var id = decodeURIComponent(url.pathname.split('/').pop());
+          var meta = ID3_FILES[id];
+          return route.fulfill({
+            status: 206,
+            headers: { 'Content-Type': 'audio/mpeg', 'Access-Control-Allow-Origin': '*' },
+            body: meta ? id3Buffer(meta) : AUDIO.slice(0, 1024)
+          });
+        }
+
+        var m = (url.searchParams.get('q') || '').match(/"([^"]+)" in parents/);
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: JSON.stringify({ files: FILES[m && m[1]] || [] })
+        });
+      });
+
+      var pageA = await ctxA.newPage();
+      await pageA.goto(base);
+      await pageA.fill('#setup-folder', 'https://drive.google.com/drive/folders/' + FOLDER);
+      await pageA.fill('#setup-key', 'AIzaTESTKEY');
+      await pageA.click('#setup-go');
+      await pageA.waitForSelector('#tracklist .track');
+
+      // Give the (failing) metadata pass time to run and, previously, to
+      // write "no tag" into the cache for every file.
+      await pageA.waitForTimeout(2500);
+
+      var beforeFix = await pageA.evaluate(function () {
+        return Array.prototype.some.call(document.querySelectorAll('.track-artist'),
+          function (e) { return e.textContent === 'Perturbator'; });
+      });
+      assert.ok(!beforeFix, 'ID3 somehow read while downloads were refused');
+
+      // Permissions come good; a reload must try again rather than trust a
+      // verdict it never actually reached.
+      refuse = false;
+      await pageA.reload();
+      await pageA.waitForSelector('#tracklist .track');
+
+      await pageA.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('.track-artist'),
+          function (e) { return e.textContent === 'Perturbator'; });
+      }, null, { timeout: 15000 });
+
+      await ctxA.close();
+    });
+
   await step('a folder that downloads but will not decode blames the format',
     async function () {
       var ctx3 = await browser.newContext();
@@ -597,7 +688,7 @@ async function main() {
   await step('tagging by artist covers every track by them', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 8;
+      return document.querySelectorAll('#tracklist .track').length === 9;
     });
 
     // "untitled demo 2.mp3" has no artist and no tags; Boards of Canada does.
@@ -706,7 +797,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 8;
+      return document.querySelectorAll('#tracklist .track').length === 9;
     });
 
     var tags = await page.evaluate(function () {

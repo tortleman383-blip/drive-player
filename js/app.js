@@ -71,13 +71,34 @@
 
   /* Fills in artist/title/tags from whatever we know so far: the ID3 tag if
    * we have read it, the filename otherwise. */
+  // Folders people actually keep music in that say nothing about who made it.
+  var GENERIC_FOLDERS = /^(music|songs?|audio|mp3s?|tracks?|media|downloads?|new folder|untitled|misc|stuff|files|shared|favou?rites)$/i;
+
+  /* For files named as a bare title - no artist anywhere in the name - two
+   * things are still worth a look before giving up: a known artist sitting at
+   * the front of the filename, and the folder the file lives in, since a
+   * library organised as "Tame Impala/Elephant.mp3" says exactly who it is. */
+  function rescueArtist(track, guess) {
+    var found = Genres.findArtistIn(guess.title || track.fileName);
+    if (found) {
+      // Use the spelling from the table rather than the filename's casing.
+      return found.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    }
+
+    var folder = String(track.folder || '').split('/')[0].trim();
+    if (folder && !GENERIC_FOLDERS.test(folder)) return folder;
+
+    return '';
+  }
+
   function applyMetadata(track, meta) {
     // nameGuess comes from the library-wide pass, which knows which half of
     // the filename is the artist; fall back if a track arrived on its own.
     var guess = track.nameGuess || Drive.parseFileName(track.fileName);
 
     track.title = (meta && meta.title) || guess.title || track.fileName;
-    track.artist = (meta && (meta.artist || meta.albumArtist)) || guess.artist || '';
+    track.artist = (meta && (meta.artist || meta.albumArtist)) || guess.artist ||
+      rescueArtist(track, guess) || '';
     track.album = (meta && meta.album) || '';
     track.id3Genre = (meta && meta.genre) || '';
     track.tagged = !!meta;
@@ -178,8 +199,15 @@
     var track = enrichQueue.shift();
     enrichActive++;
 
-    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (buf) {
-      var meta = buf ? ID3.parse(buf) : null;
+    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
+      if (!result.ok) {
+        // Drive would not hand over the bytes. Leave the track untagged so
+        // the next load tries again, rather than recording a verdict we did
+        // not actually reach.
+        return;
+      }
+
+      var meta = result.buffer ? ID3.parse(result.buffer) : null;
       if (meta) {
         applyMetadata(track, meta);
         Store.cacheSet(track.id, {
@@ -193,7 +221,7 @@
         track.cachedArt = !!meta.picture;
         scheduleRedraw();
       } else {
-        // Remember that there is nothing to read, so a reload does not retry.
+        // Genuinely no tag in the file: remember, so a reload does not retry.
         Store.cacheSet(track.id, { modifiedTime: track.modifiedTime, art: false, meta: null });
         track.tagged = true;
       }
@@ -233,8 +261,8 @@
     showArtwork(null);
     if (track.cachedArt === false && track.tagged) return;
 
-    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (buf) {
-      var meta = buf ? ID3.parse(buf) : null;
+    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
+      var meta = result.ok && result.buffer ? ID3.parse(result.buffer) : null;
       if (!meta || !meta.picture) return;
 
       var blob = new Blob([meta.picture.data], { type: meta.picture.mime });

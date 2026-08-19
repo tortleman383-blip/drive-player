@@ -131,6 +131,9 @@
     'bill evans':               ['Jazz'],
     'thelonious monk':          ['Jazz'],
     'nujabes':                  ['Lo-Fi', 'Hip-Hop', 'Jazz'],
+    'yoko kanno':               ['Jazz', 'Soundtrack', 'Funk'],
+    'the seatbelts':            ['Jazz', 'Soundtrack', 'Funk'],
+    'cowboy bebop':             ['Jazz', 'Soundtrack', 'Funk'],
     'james brown':              ['Funk', 'R&B'],
     'parliament':               ['Funk'],
     'vulfpeck':                 ['Funk', 'Jazz'],
@@ -281,9 +284,29 @@
     return fromArtist(name).length > 0;
   }
 
+  /* Finds a known artist inside free text - for files named "Tame Impala
+   * Elephant.mp3", with no separator to split on.
+   *
+   * Only multi-word names are considered, and only at the start. A one-word
+   * name like "Air" would match half the song titles in existence, and a
+   * match in the middle is far more likely to be a coincidence than a
+   * credit. Returns the artist's canonical spelling, or ''. */
+  function findArtistIn(text) {
+    var words = normaliseArtist(text).split(' ').filter(Boolean);
+    if (words.length < 2) return '';
+
+    // Longest first, so "boards of canada" wins over any shorter prefix.
+    for (var take = Math.min(words.length - 1, 5); take >= 2; take--) {
+      var candidate = words.slice(0, take).join(' ');
+      if (ARTISTS[candidate]) return candidate;
+    }
+    return '';
+  }
+
   global.Genres = {
     TAXONOMY: TAXONOMY,
     isKnownArtist: isKnownArtist,
+    findArtistIn: findArtistIn,
     ARTISTS: ARTISTS,
     inferTags: inferTags,
     orderTags: orderTags,

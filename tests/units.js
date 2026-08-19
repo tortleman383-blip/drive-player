@@ -231,6 +231,42 @@ test('files with no separator are passed through untouched', function () {
   assert.strictEqual(out[1].artist, 'Weezer');
 });
 
+/* ---------- finding an artist with no separator to split on ---------- */
+
+test('a multi-word known artist is found at the front of a bare filename', function () {
+  assert.strictEqual(Genres.findArtistIn('Tame Impala Elephant'), 'tame impala');
+  assert.strictEqual(Genres.findArtistIn('Sidewalks and Skeletons Void'), 'sidewalks and skeletons');
+  assert.strictEqual(Genres.findArtistIn('Boards of Canada Roygbiv'), 'boards of canada');
+});
+
+test('the longest matching name wins', function () {
+  // "Tame Impala" must not be beaten by any shorter prefix.
+  assert.strictEqual(Genres.findArtistIn('Tame Impala The Less I Know The Better'), 'tame impala');
+});
+
+test('a one-word artist is not hunted for inside a title', function () {
+  // "Air" and "Weezer" are real entries, but matching them mid-title would
+  // mis-credit any song with the word in it.
+  assert.strictEqual(Genres.findArtistIn('Air Force Ones'), '');
+  assert.strictEqual(Genres.findArtistIn('Weezer'), '');
+});
+
+test('an artist named only later in the title is ignored', function () {
+  assert.strictEqual(Genres.findArtistIn('Cover of Tame Impala Elephant'), '');
+});
+
+test('nothing is invented from an unknown name', function () {
+  assert.strictEqual(Genres.findArtistIn('Some Local Demo Track'), '');
+});
+
+test('Cowboy Bebop is tagged as the soundtrack it is', function () {
+  var tags = Genres.inferTags({ artist: 'Yoko Kanno', title: 'Tank!' });
+  assert.ok(Array.from(tags).indexOf('Jazz') !== -1, String(tags));
+  assert.ok(Array.from(tags).indexOf('Soundtrack') !== -1, String(tags));
+  assert.ok(Array.from(Genres.inferTags({ artist: 'The Seatbelts' })).indexOf('Jazz') !== -1);
+  assert.ok(Array.from(Genres.inferTags({ artist: 'Cowboy Bebop' })).indexOf('Soundtrack') !== -1);
+});
+
 /* ---------- folder ids ---------- */
 
 test('pulls the folder id out of every link shape', function () {

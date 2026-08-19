@@ -157,15 +157,22 @@
   }
 
   /* Reads the head of a file so ID3 tags can be parsed without downloading
-   * the whole track. Resolves to null if the range request is refused. */
+   * the whole track.
+   *
+   * Resolves to { ok, buffer }. The distinction matters: "Drive would not
+   * give me the bytes" and "the bytes contain no tag" look identical to the
+   * caller otherwise, and caching the first as the second brands a file
+   * untaggable for good over what may be a temporary permission problem. */
   function fetchTagBytes(fileId, apiKey) {
     return fetch(streamUrl(fileId, apiKey), {
       headers: { Range: 'bytes=0-' + (TAG_BYTES - 1) }
     }).then(function (res) {
-      if (!res.ok) return null;
-      return res.arrayBuffer();
+      if (!res.ok) return { ok: false, buffer: null };
+      return res.arrayBuffer().then(function (buffer) {
+        return { ok: true, buffer: buffer };
+      });
     }).catch(function () {
-      return null;
+      return { ok: false, buffer: null };
     });
   }
 

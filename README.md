@@ -83,6 +83,12 @@ The artist comes from the file's ID3 tag when it has one. When it does not,
 it is read off the filename, with leading track numbers, underscores and
 `(Official Video)` noise stripped.
 
+When a filename is a bare title with no artist in it at all, two last
+resorts apply: a known multi-word artist sitting at the front of the name
+(`Tame Impala Elephant.mp3`), and the folder the file lives in, since a
+library organised as `Tame Impala/Elephant.mp3` says exactly who it is.
+Generic folder names — `Music`, `Downloads`, `New folder` — are ignored.
+
 Filenames come in both orders — `Weezer - Say It Ain't So` and `Say It Ain't
 So - Weezer` — and a single filename cannot tell you which half is the band.
 A library can: **artists recur, song titles do not.** So the whole listing is
@@ -164,7 +170,10 @@ Lock-screen and headset buttons work too, via the Media Session API.
 - **Metadata** is read by fetching only the first 256 KB of each file and
   parsing the ID3 tag out of it, then cached in `localStorage` keyed by Drive's
   `modifiedTime`. The first load of a large folder does this in the background,
-  four files at a time; later loads are instant.
+  four files at a time; later loads are instant. A file is only recorded as
+  having no tag when Drive actually served its bytes — a refused request is
+  left untagged so the next load tries again, rather than writing down a
+  verdict that was never reached.
 - **Artwork** is fetched for the playing track only, with a 20-item cache, so
   a big library does not accumulate decoded images.
 - **A file that will not play** is marked in the list and skipped rather than
@@ -201,8 +210,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 36 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 31 tests in a real browser
+node tests/units.js                      # 42 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 33 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,
