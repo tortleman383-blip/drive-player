@@ -23,18 +23,26 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Playwright's own image ships the browser and its system libraries, so
+    # there is no download and no apt-get. Installing the browser on a bare
+    # runner meant "playwright install --with-deps", which shells out to apt
+    # and stalls indefinitely whenever the runner's dpkg lock is held - it sat
+    # there for 23 minutes once, blocking a deploy behind it.
+    container:
+      image: mcr.microsoft.com/playwright:v1.49.1-jammy
+
+    # Nothing here should take five minutes. Fail rather than hang.
+    timeout-minutes: 15
+
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Unit tests
         run: node tests/units.js
 
-      - name: Install a browser for the end-to-end tests
-        run: npm install playwright && npx playwright install --with-deps chromium
+      - name: Install the playwright client
+        run: npm install --no-save playwright@1.49.1
 
       - name: End-to-end tests
         run: node tests/e2e.js
