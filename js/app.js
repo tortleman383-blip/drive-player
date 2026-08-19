@@ -72,7 +72,9 @@
   /* Fills in artist/title/tags from whatever we know so far: the ID3 tag if
    * we have read it, the filename otherwise. */
   function applyMetadata(track, meta) {
-    var guess = Drive.parseFileName(track.fileName);
+    // nameGuess comes from the library-wide pass, which knows which half of
+    // the filename is the artist; fall back if a track arrived on its own.
+    var guess = track.nameGuess || Drive.parseFileName(track.fileName);
 
     track.title = (meta && meta.title) || guess.title || track.fileName;
     track.artist = (meta && (meta.artist || meta.albumArtist)) || guess.artist || '';
@@ -96,6 +98,7 @@
       folder: file.folder,
       size: file.size,
       modifiedTime: file.modifiedTime,
+      nameGuess: file.nameGuess,
       url: Drive.streamUrl(file.id, settings.apiKey),
       duration: 0,
       dead: false
@@ -117,6 +120,9 @@
     return Drive.listTracks(settings.folderId, settings.apiKey, function (n) {
       setStatus('Found ' + n + ' track' + (n === 1 ? '' : 's') + '…');
     }).then(function (files) {
+      var guesses = Drive.parseLibrary(files.map(function (f) { return f.fileName; }));
+      files.forEach(function (f, i) { f.nameGuess = guesses[i]; });
+
       tracks = files.map(buildTrack);
       els.refresh.disabled = false;
 

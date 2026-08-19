@@ -33,6 +33,7 @@ FILES[FOLDER] = [
   { id: 'f4', name: 'untitled demo 2.mp3', mimeType: 'audio/mpeg' },
   { id: 'f5', name: 'track05.mp3', mimeType: 'audio/mpeg' },      // ID3 only
   { id: 'f7', name: 'Grouper - Clearing.mp3', mimeType: 'audio/mpeg' },  // untaggable
+  { id: 'f8', name: 'Borderline - Tame Impala.mp3', mimeType: 'audio/mpeg' },  // title first
 
   { id: 'img', name: 'cover.jpg', mimeType: 'image/jpeg' },
   { id: SUBFOLDER, name: 'Deep Cuts', mimeType: 'application/vnd.google-apps.folder' }
@@ -241,7 +242,7 @@ async function main() {
     var titles = await page.$$eval('.track-title', function (els) {
       return els.map(function (e) { return e.textContent; });
     });
-    assert.strictEqual(titles.length, 7, 'expected 7 tracks, got ' + titles.length + ': ' + titles);
+    assert.strictEqual(titles.length, 8, 'expected 8 tracks, got ' + titles.length + ': ' + titles);
     assert.ok(titles.some(function (t) { return /Roygbiv/.test(t); }), 'subfolder track missing');
     assert.ok(!titles.some(function (t) { return /cover/i.test(t); }), 'image was listed');
   });
@@ -258,6 +259,21 @@ async function main() {
     var comTruise = rows.filter(function (r) { return r.artist === 'Com Truise'; })[0];
     assert.ok(comTruise, 'Com Truise row not found: ' + JSON.stringify(rows));
     assert.strictEqual(comTruise.title, 'Propagation');
+  });
+
+  await step('a title-first filename is read the right way round', async function () {
+    var row = await page.$$eval('.track', function (els) {
+      return els.map(function (e) {
+        return {
+          title: e.querySelector('.track-title').textContent,
+          artist: e.querySelector('.track-artist').textContent
+        };
+      }).filter(function (r) { return r.title === 'Borderline'; })[0];
+    });
+
+    assert.ok(row, 'Borderline not listed');
+    assert.strictEqual(row.artist, 'Tame Impala',
+      'title-first filename not flipped: ' + JSON.stringify(row));
   });
 
   await step('ID3 tags replace the filename guess once they are read', async function () {
@@ -301,7 +317,7 @@ async function main() {
   await step('All brings everything back', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 7;
+      return document.querySelectorAll('#tracklist .track').length === 8;
     });
   });
 
@@ -314,7 +330,7 @@ async function main() {
     });
     await page.fill('#search', '');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 7;
+      return document.querySelectorAll('#tracklist .track').length === 8;
     });
   });
 
@@ -388,8 +404,8 @@ async function main() {
       });
       var unique = {};
       order.forEach(function (i) { unique[i] = true; });
-      assert.strictEqual(order.length, 7, 'order length ' + order.length);
-      assert.strictEqual(Object.keys(unique).length, 7, 'shuffle dropped or repeated entries');
+      assert.strictEqual(order.length, 8, 'order length ' + order.length);
+      assert.strictEqual(Object.keys(unique).length, 8, 'shuffle dropped or repeated entries');
     });
 
   /* ---- tagging ---- */
@@ -440,7 +456,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 7;
+      return document.querySelectorAll('#tracklist .track').length === 8;
     });
 
     var chips = await page.$$eval('#genres .chip', function (els) {
@@ -581,7 +597,7 @@ async function main() {
   await step('tagging by artist covers every track by them', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 7;
+      return document.querySelectorAll('#tracklist .track').length === 8;
     });
 
     // "untitled demo 2.mp3" has no artist and no tags; Boards of Canada does.
@@ -690,7 +706,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 7;
+      return document.querySelectorAll('#tracklist .track').length === 8;
     });
 
     var tags = await page.evaluate(function () {

@@ -152,6 +152,19 @@
     'ghost':                    ['Metal', 'Rock'],
     'nine inch nails':          ['Rock', 'Electronic', 'Metal'],
 
+    'weezer':                   ['Rock', 'Indie', 'Punk'],
+    'coldplay':                 ['Rock', 'Pop', 'Indie'],
+    'fleetwood mac':            ['Rock', 'Pop', 'Folk'],
+    'mgmt':                     ['Psych', 'Synth', 'Indie'],
+    'empire of the sun':        ['Synth', 'Pop', 'Electronic'],
+    'grimes':                   ['Synth', 'Pop', 'Electronic'],
+    'air':                      ['Electronic', 'Ambient', 'Synth'],
+    'animal collective':        ['Psych', 'Indie', 'Electronic'],
+    'panchiko':                 ['Indie', 'Lo-Fi', 'Psych'],
+    'c418':                     ['Ambient', 'Electronic', 'Soundtrack'],
+    'biting elbows':            ['Rock', 'Punk', 'Electronic'],
+    'men i trust':              ['Indie', 'Synth', 'Funk'],
+    'yumi zouma':               ['Indie', 'Synth', 'Pop'],
     'the ramones':              ['Punk', 'Rock'],
     'dead kennedys':            ['Punk'],
     'idles':                    ['Punk', 'Rock'],
@@ -262,8 +275,15 @@
       .concat(tags.filter(function (t) { return TAXONOMY.indexOf(t) === -1; }));
   }
 
+  // Does the built-in table recognise this as an artist? Used to work out
+  // which half of a "A - B" filename is the band.
+  function isKnownArtist(name) {
+    return fromArtist(name).length > 0;
+  }
+
   global.Genres = {
     TAXONOMY: TAXONOMY,
+    isKnownArtist: isKnownArtist,
     ARTISTS: ARTISTS,
     inferTags: inferTags,
     orderTags: orderTags,

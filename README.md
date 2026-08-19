@@ -80,8 +80,17 @@ Tags are worked out in this order, first hit wins:
 6. **Unsorted**, so nothing goes missing.
 
 The artist comes from the file's ID3 tag when it has one. When it does not,
-it is read off the filename: `Artist - Title.mp3`, with leading track numbers,
-underscores and `(Official Video)` noise stripped.
+it is read off the filename, with leading track numbers, underscores and
+`(Official Video)` noise stripped.
+
+Filenames come in both orders — `Weezer - Say It Ain't So` and `Say It Ain't
+So - Weezer` — and a single filename cannot tell you which half is the band.
+A library can: **artists recur, song titles do not.** So the whole listing is
+parsed first, each side's text is counted across every file, and a pair is
+flipped when its second half looks more like an artist than its first (either
+the built-in table knows it, or it shows up in several filenames). Mixed
+conventions in one folder come out right, and a lone unknown name is left
+alone rather than flipped on a guess.
 
 ### Fixing a tag
 
@@ -192,8 +201,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 30 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 30 tests in a real browser
+node tests/units.js                      # 36 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 31 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

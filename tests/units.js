@@ -167,6 +167,70 @@ test('handles en and em dashes as separators', function () {
   assert.strictEqual(Drive.parseFileName('Burial — Archangel.mp3').artist, 'Burial');
 });
 
+/* ---------- working out which half of a filename is the artist ---------- */
+
+test('a library named "Title - Artist" is flipped the right way round', function () {
+  // The shape that broke it: Weezer covers named title-first.
+  var out = Drive.parseLibrary([
+    "Say It Ain't So - Weezer.mp3",
+    'Surf Wax America - Weezer.mp3',
+    'Undone - Weezer.mp3',
+    'Buddy Holly - Weezer.mp3'
+  ]);
+
+  out.forEach(function (t) {
+    assert.strictEqual(t.artist, 'Weezer', 'got artist ' + t.artist + ' / title ' + t.title);
+  });
+  assert.strictEqual(out[0].title, "Say It Ain't So");
+});
+
+test('a library named "Artist - Title" is left alone', function () {
+  var out = Drive.parseLibrary([
+    'Tame Impala - Let It Happen.mp3',
+    'Tame Impala - Borderline.mp3',
+    'Tame Impala - Elephant.mp3'
+  ]);
+
+  out.forEach(function (t) {
+    assert.strictEqual(t.artist, 'Tame Impala', 'got artist ' + t.artist);
+  });
+});
+
+test('a known artist is recognised even appearing only once', function () {
+  var out = Drive.parseLibrary(['Borderline - Tame Impala.mp3', 'random thing.mp3']);
+  assert.strictEqual(out[0].artist, 'Tame Impala');
+  assert.strictEqual(out[0].title, 'Borderline');
+});
+
+test('mixed conventions in one folder both come out right', function () {
+  var out = Drive.parseLibrary([
+    'Weezer - Island In The Sun.mp3',
+    "Say It Ain't So - Weezer.mp3",
+    'Undone - Weezer.mp3',
+    'MGMT - Kids.mp3'
+  ]);
+
+  assert.strictEqual(out[0].artist, 'Weezer');
+  assert.strictEqual(out[0].title, 'Island In The Sun');
+  assert.strictEqual(out[1].artist, 'Weezer');
+  assert.strictEqual(out[1].title, "Say It Ain't So");
+  assert.strictEqual(out[3].artist, 'MGMT');
+  assert.strictEqual(out[3].title, 'Kids');
+});
+
+test('an unknown artist appearing once is not flipped on a guess', function () {
+  var out = Drive.parseLibrary(['Some Band - Some Song.mp3']);
+  assert.strictEqual(out[0].artist, 'Some Band');
+  assert.strictEqual(out[0].title, 'Some Song');
+});
+
+test('files with no separator are passed through untouched', function () {
+  var out = Drive.parseLibrary(['just a title.mp3', 'Weezer - Pork And Beans.mp3']);
+  assert.strictEqual(out[0].artist, '');
+  assert.strictEqual(out[0].title, 'just a title');
+  assert.strictEqual(out[1].artist, 'Weezer');
+});
+
 /* ---------- folder ids ---------- */
 
 test('pulls the folder id out of every link shape', function () {

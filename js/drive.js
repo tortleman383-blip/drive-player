@@ -236,7 +236,50 @@
     return { artist: '', title: s };
   }
 
+  /* Filenames arrive in both orders - "Weezer - Say It Ain't So" and
+   * "Say It Ain't So - Weezer" - and per file there is no way to tell which
+   * half is the band. Across a library there is: artists recur, song titles
+   * do not. So parse everything first, count how often each side's text shows
+   * up anywhere, and flip the pairs whose second half looks more like an
+   * artist than their first.
+   *
+   * Takes a list of filenames, returns their { artist, title } in order. */
+  function parseLibrary(fileNames) {
+    var parsed = (fileNames || []).map(parseFileName);
+    var counts = {};
+
+    function key(value) {
+      if (!value) return '';
+      return global.Genres ? global.Genres.normaliseArtist(value)
+                           : String(value).toLowerCase().trim();
+    }
+
+    parsed.forEach(function (p) {
+      [p.artist, p.title].forEach(function (value) {
+        var k = key(value);
+        if (k) counts[k] = (counts[k] || 0) + 1;
+      });
+    });
+
+    function score(value) {
+      if (!value) return -1;
+      var points = 0;
+      if (global.Genres && global.Genres.isKnownArtist(value)) points += 2;
+      if (counts[key(value)] > 1) points += 1;
+      return points;
+    }
+
+    return parsed.map(function (p) {
+      if (!p.artist) return p;
+      // Only flip on positive evidence for the other side.
+      return score(p.title) > score(p.artist)
+        ? { artist: p.title, title: p.artist }
+        : p;
+    });
+  }
+
   global.Drive = {
+    parseLibrary: parseLibrary,
     folderIdFrom: folderIdFrom,
     streamUrl: streamUrl,
     listTracks: listTracks,
