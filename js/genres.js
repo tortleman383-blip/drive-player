@@ -232,10 +232,15 @@
     return found;
   }
 
-  /* track: { artist, title, album, id3Genre, fileName }
-   * override: array of tags the listener set by hand, or undefined. */
-  function inferTags(track, override) {
+  /* track:      { artist, title, album, id3Genre, fileName }
+   * override:   tags the listener set on this one track, or undefined
+   * artistRule: tags the listener set for this artist, or undefined
+   *
+   * The track override wins over the artist rule so that one odd song on an
+   * album can be re-tagged without breaking the rule for everything else. */
+  function inferTags(track, override, artistRule) {
     if (override && override.length) return override.slice();
+    if (artistRule && artistRule.length) return artistRule.slice();
 
     var tags = fromArtist(track.artist);
     if (tags.length) return tags;

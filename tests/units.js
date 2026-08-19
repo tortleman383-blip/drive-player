@@ -320,6 +320,22 @@ test('unknown everything lands in Unsorted', function () {
   eqTags(Genres.inferTags({ artist: 'Nobody', title: 'Xyzzy' }), ['Unsorted']);
 });
 
+test('an artist rule beats the built-in table but loses to a track override', function () {
+  var track = { artist: 'Tame Impala', title: 'Elephant' };
+  eqTags(Genres.inferTags(track, null, ['Shoegaze']), ['Shoegaze']);
+  eqTags(Genres.inferTags(track, ['Metal'], ['Shoegaze']), ['Metal']);
+});
+
+test('an artist rule tags an artist the built-in table has never heard of', function () {
+  var tags = Genres.inferTags({ artist: 'Some Local Band', title: 'Demo' }, null, ['Punk', 'Indie']);
+  eqTags(tags, ['Punk', 'Indie']);
+});
+
+test('an empty artist rule falls through instead of blanking the tags', function () {
+  var tags = Genres.inferTags({ artist: 'Tame Impala', title: 'Elephant' }, null, []);
+  assert.ok(Array.from(tags).indexOf('Psych') !== -1, String(tags));
+});
+
 test('a manual override beats every rule', function () {
   var tags = Genres.inferTags({ artist: 'Tame Impala', title: 'Elephant' }, ['Metal']);
   eqTags(tags, ['Metal']);

@@ -140,6 +140,10 @@
       <span>Add your own, comma separated</span>
       <input id="tagdlg-custom" type="text" spellcheck="false" placeholder="Shoegaze, Late night">
     </label>
+    <label class="check" id="tagdlg-artistrow" hidden>
+      <input id="tagdlg-artist" type="checkbox">
+      <span id="tagdlg-artistlabel">Apply to everything by this artist</span>
+    </label>
     <div class="dialog-actions">
       <button id="tagdlg-reset" class="ghost">Back to auto</button>
       <button id="tagdlg-cancel" class="ghost">Cancel</button>
@@ -161,12 +165,15 @@
       <input id="set-key" type="password" spellcheck="false" autocomplete="off">
     </label>
     <p class="dialog-sub">
-      Genre edits live on this device. Export them to keep a copy, or to move
-      them to another browser.
+      Genre edits live on this device. Export them to keep a copy or move them
+      to another browser. <b>Export untagged artists</b> writes a file listing
+      every artist the player could not place, ready to be filled in and
+      imported back.
     </p>
     <div class="dialog-actions wrap">
       <button id="set-export" class="ghost">Export genres</button>
       <button id="set-import" class="ghost">Import genres</button>
+      <button id="set-untagged" class="ghost">Export untagged artists</button>
       <button id="set-clearcache" class="ghost">Clear metadata cache</button>
       <input id="set-file" type="file" accept="application/json,.json" hidden>
     </div>

@@ -32,6 +32,8 @@ FILES[FOLDER] = [
   { id: 'f3', name: '03 - Com Truise - Propagation (Official Audio).mp3', mimeType: 'audio/mpeg' },
   { id: 'f4', name: 'untitled demo 2.mp3', mimeType: 'audio/mpeg' },
   { id: 'f5', name: 'track05.mp3', mimeType: 'audio/mpeg' },      // ID3 only
+  { id: 'f7', name: 'Grouper - Clearing.mp3', mimeType: 'audio/mpeg' },  // untaggable
+
   { id: 'img', name: 'cover.jpg', mimeType: 'image/jpeg' },
   { id: SUBFOLDER, name: 'Deep Cuts', mimeType: 'application/vnd.google-apps.folder' }
 ];
@@ -239,7 +241,7 @@ async function main() {
     var titles = await page.$$eval('.track-title', function (els) {
       return els.map(function (e) { return e.textContent; });
     });
-    assert.strictEqual(titles.length, 6, 'expected 6 tracks, got ' + titles.length + ': ' + titles);
+    assert.strictEqual(titles.length, 7, 'expected 7 tracks, got ' + titles.length + ': ' + titles);
     assert.ok(titles.some(function (t) { return /Roygbiv/.test(t); }), 'subfolder track missing');
     assert.ok(!titles.some(function (t) { return /cover/i.test(t); }), 'image was listed');
   });
@@ -281,9 +283,7 @@ async function main() {
 
   await step('the brief: filtering by Synth returns Tame Impala and Sidewalks and Skeletons',
     async function () {
-      await page.click('#genres .chip:text-is("Synth4")').catch(function () {});
-      var chip = await page.$('#genres .chip >> text=/^Synth/');
-      await chip.click();
+      await page.click('#genres .chip >> text=/^Synth/');
 
       await page.waitForFunction(function () {
         return document.querySelector('#genres .chip.on').textContent.indexOf('Synth') === 0;
@@ -299,10 +299,9 @@ async function main() {
     });
 
   await step('All brings everything back', async function () {
-    var chip = await page.$('#genres .chip >> text=/^All/');
-    await chip.click();
+    await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 6;
+      return document.querySelectorAll('#tracklist .track').length === 7;
     });
   });
 
@@ -315,7 +314,7 @@ async function main() {
     });
     await page.fill('#search', '');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 6;
+      return document.querySelectorAll('#tracklist .track').length === 7;
     });
   });
 
@@ -389,16 +388,15 @@ async function main() {
       });
       var unique = {};
       order.forEach(function (i) { unique[i] = true; });
-      assert.strictEqual(order.length, 6, 'order length ' + order.length);
-      assert.strictEqual(Object.keys(unique).length, 6, 'shuffle dropped or repeated entries');
+      assert.strictEqual(order.length, 7, 'order length ' + order.length);
+      assert.strictEqual(Object.keys(unique).length, 7, 'shuffle dropped or repeated entries');
     });
 
   /* ---- tagging ---- */
 
   await step('a genre can be re-tagged by hand and the bar updates', async function () {
     await page.evaluate(function () { window.DrivePlayer.player.setShuffle(false); });
-    var chip = await page.$('#genres .chip >> text=/^All/');
-    await chip.click();
+    await page.click('#genres .chip >> text=/^All/');
 
     // Open the editor from the first track's tag chip.
     await page.click('#tracklist .track:nth-child(1) .track-tags .tag');
@@ -425,27 +423,24 @@ async function main() {
     assert.ok(tagged.indexOf('Metal') !== -1, 'Metal not applied: ' + tagged);
     assert.ok(tagged.indexOf('Late Night') !== -1, 'custom tag not applied: ' + tagged);
 
-    var metal = await page.$('#genres .chip >> text=/^Metal/');
-    await metal.click();
+    await page.click('#genres .chip >> text=/^Metal/');
     await page.waitForFunction(function () {
       return document.querySelectorAll('#tracklist .track').length === 1;
     });
 
-    var custom = await page.$('#genres .chip >> text=/^Late Night/');
-    await custom.click();
+    await page.click('#genres .chip >> text=/^Late Night/');
     await page.waitForFunction(function () {
       return document.querySelectorAll('#tracklist .track').length === 1;
     });
 
-    var back = await page.$('#genres .chip >> text=/^All/');
-    await back.click();
+    await page.click('#genres .chip >> text=/^All/');
   });
 
   await step('manual tags survive a reload', async function () {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 6;
+      return document.querySelectorAll('#tracklist .track').length === 7;
     });
 
     var chips = await page.$$eval('#genres .chip', function (els) {
@@ -580,6 +575,132 @@ async function main() {
 
       await ctx3.close();
     });
+
+  /* ---- tagging a whole artist at once ---- */
+
+  await step('tagging by artist covers every track by them', async function () {
+    await page.click('#genres .chip >> text=/^All/');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#tracklist .track').length === 7;
+    });
+
+    // "untitled demo 2.mp3" has no artist and no tags; Boards of Canada does.
+    await page.click('.track:has(.track-artist:text-is("Boards of Canada")) .track-tags .tag');
+    await page.waitForSelector('#tagdlg:not([hidden])');
+
+    assert.ok(!(await page.$eval('#tagdlg-artistrow', function (e) { return e.hidden; })),
+      'the artist option should be offered');
+    var label = await page.textContent('#tagdlg-artistlabel');
+    assert.ok(/Boards of Canada/.test(label), label);
+
+    await page.check('#tagdlg-artist');
+    await page.click('#tagdlg-tags .chip >> text=Jazz');
+    await page.click('#tagdlg-save');
+    await page.waitForFunction(function () { return document.getElementById('tagdlg').hidden; });
+
+    var tags = await page.evaluate(function () {
+      var t = window.DrivePlayer.tracks().filter(function (x) {
+        return x.artist === 'Boards of Canada';
+      })[0];
+      return t.tags.slice();
+    });
+    assert.ok(tags.indexOf('Jazz') !== -1, 'artist rule not applied: ' + tags);
+  });
+
+  await step('a track with no artist is not offered the artist option', async function () {
+    await page.click('.track:has(.track-artist:text-is("Unknown artist")) .track-tags .tag');
+    await page.waitForSelector('#tagdlg:not([hidden])');
+    assert.ok(await page.$eval('#tagdlg-artistrow', function (e) { return e.hidden; }),
+      'artist option offered for a track with no artist');
+    await page.click('#tagdlg-cancel');
+  });
+
+  await step('the untagged-artist export lists only what needs tagging',
+    async function () {
+      var payload = await page.evaluate(function () {
+        // Capture what the download would contain, without a file dialog.
+        var captured = null;
+        var realCreate = URL.createObjectURL;
+        var reader = null;
+
+        return new Promise(function (resolve) {
+          // If no download is produced, fail fast rather than hanging.
+          var giveUp = setTimeout(function () {
+            URL.createObjectURL = realCreate;
+            resolve(null);
+          }, 5000);
+
+          URL.createObjectURL = function (blob) {
+            captured = blob;
+            reader = new FileReader();
+            reader.onload = function () {
+              clearTimeout(giveUp);
+              URL.createObjectURL = realCreate;
+              resolve(JSON.parse(reader.result));
+            };
+            reader.readAsText(blob);
+            return 'blob:stub';
+          };
+          document.getElementById('set-untagged').click();
+        });
+      });
+
+      assert.ok(payload, 'no file was produced by the untagged export');
+      assert.strictEqual(payload.version, 2);
+      assert.ok(Array.isArray(payload.genres) && payload.genres.length > 5,
+        'the genre vocabulary should be included for whoever fills this in');
+
+      var names = Object.keys(payload.artists);
+      names.forEach(function (n) {
+        assert.deepStrictEqual(payload.artists[n], [], n + ' should be blank');
+      });
+      assert.ok(names.indexOf('Grouper') !== -1, 'the untagged artist was not listed: ' + names);
+      assert.ok(names.indexOf('Tame Impala') === -1, 'a tagged artist was listed');
+      assert.ok(names.indexOf('Boards of Canada') === -1, 'the artist just tagged was listed');
+    });
+
+  await step('importing a filled-in artist file tags the library', async function () {
+    var applied = await page.evaluate(function () {
+      var file = new File([JSON.stringify({
+        version: 2,
+        artists: { 'THE Local Band': ['Punk'], 'Com Truise': ['Jazz'] }
+      })], 'genres.json', { type: 'application/json' });
+
+      var input = document.getElementById('set-file');
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change'));
+
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          var t = window.DrivePlayer.tracks().filter(function (x) {
+            return x.artist === 'Com Truise';
+          })[0];
+          resolve(t.tags.slice());
+        }, 400);
+      });
+    });
+
+    assert.ok(applied.indexOf('Jazz') !== -1,
+      'imported artist rule not applied (case-insensitive match?): ' + applied);
+  });
+
+  await step('imported artist rules survive a reload', async function () {
+    await page.reload();
+    await page.waitForSelector('#app:not([hidden])');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#tracklist .track').length === 7;
+    });
+
+    var tags = await page.evaluate(function () {
+      var t = window.DrivePlayer.tracks().filter(function (x) {
+        return x.artist === 'Com Truise';
+      })[0];
+      return t.tags.slice();
+    });
+    assert.ok(tags.indexOf('Jazz') !== -1, 'artist rule lost on reload: ' + tags);
+  });
 
   await step('a folder in the URL fragment pre-fills setup', async function () {
     var ctx4 = await browser.newContext();

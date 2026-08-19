@@ -21,10 +21,12 @@
     tagdlg: $('tagdlg'), tagdlgTitle: $('tagdlg-title'), tagdlgSub: $('tagdlg-sub'),
     tagdlgTags: $('tagdlg-tags'), tagdlgCustom: $('tagdlg-custom'),
     tagdlgSave: $('tagdlg-save'), tagdlgCancel: $('tagdlg-cancel'),
-    tagdlgReset: $('tagdlg-reset'),
+    tagdlgReset: $('tagdlg-reset'), tagdlgArtist: $('tagdlg-artist'),
+    tagdlgArtistRow: $('tagdlg-artistrow'), tagdlgArtistLabel: $('tagdlg-artistlabel'),
     setdlg: $('setdlg'), setFolder: $('set-folder'), setKey: $('set-key'),
     setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
     setImport: $('set-import'), setFile: $('set-file'), setClearCache: $('set-clearcache'),
+    setUntagged: $('set-untagged'),
     toast: $('toast'), audio: $('audio')
   };
 
@@ -78,8 +80,11 @@
     track.id3Genre = (meta && meta.genre) || '';
     track.tagged = !!meta;
 
-    track.tags = Genres.orderTags(Genres.inferTags(track, Store.getOverride(track)));
-    track.custom = !!Store.getOverride(track);
+    var override = Store.getOverride(track);
+    var artistRule = Store.getArtistRule(track.artist);
+
+    track.tags = Genres.orderTags(Genres.inferTags(track, override, artistRule));
+    track.custom = !!(override || artistRule);
     track.haystack = [track.title, track.artist, track.album, track.fileName]
       .join(' ').toLowerCase();
   }
@@ -365,6 +370,7 @@
       var dur = document.createElement('div');
       dur.className = 'track-dur';
       dur.textContent = track.duration ? fmtTime(track.duration) : '';
+      li.dataset.trackId = track.id;
 
       li.appendChild(num);
       li.appendChild(main);
@@ -433,15 +439,29 @@
     els.seekBuffer.style.width = buffered + '%';
 
     // Duration is only known once the file loads; keep it for the list.
+    // Patch the one cell rather than redrawing: a full rebuild detaches every
+    // row, and a click that lands mid-rebuild is lost.
     var track = player.nowPlaying();
     if (track && d && !track.duration) {
       track.duration = d;
       Store.cacheSet(track.id, { modifiedTime: track.modifiedTime, duration: d });
-      scheduleRedraw();
+
+      var row = els.list.querySelector('[data-track-id="' + track.id + '"] .track-dur');
+      if (row) row.textContent = fmtTime(d);
     }
   }
 
   /* ---------- tag dialog ---------- */
+
+  function retagAll() {
+    tracks.forEach(function (t) {
+      var cached = Store.cacheGet(t.id, t.modifiedTime);
+      applyMetadata(t, cached ? cached.meta : null);
+    });
+    renderGenres();
+    applyFilter();
+    renderNowPlaying(player.nowPlaying());
+  }
 
   function openTagDialog(track) {
     editing = track;
@@ -470,6 +490,17 @@
       return Genres.TAXONOMY.indexOf(g) === -1;
     }).join(', ');
 
+    // Tagging by artist is how a library actually gets sorted: one decision
+    // covers every track by them, including ones not loaded yet.
+    if (track.artist) {
+      els.tagdlgArtistLabel.textContent = 'Apply to everything by ' + track.artist;
+      els.tagdlgArtist.checked = !!Store.getArtistRule(track.artist);
+      els.tagdlgArtistRow.hidden = false;
+    } else {
+      els.tagdlgArtist.checked = false;
+      els.tagdlgArtistRow.hidden = true;
+    }
+
     els.tagdlg._selected = selected;
     els.tagdlg.hidden = false;
   }
@@ -491,24 +522,36 @@
       if (t && selected.indexOf(t) === -1) selected.push(t);
     });
 
-    Store.setOverride(editing, selected);
-    var cached = Store.cacheGet(editing.id, editing.modifiedTime);
-    applyMetadata(editing, cached ? cached.meta : null);
+    var byArtist = els.tagdlgArtist.checked && editing.artist;
+    var artist = editing.artist;
+
+    if (byArtist) {
+      // The rule carries the tags; a leftover track override would just mask
+      // it for this one song.
+      Store.setArtistRule(artist, selected);
+      Store.setOverride(editing, null);
+    } else {
+      Store.setOverride(editing, selected);
+      if (Store.getArtistRule(artist)) Store.setArtistRule(artist, null);
+    }
 
     closeTagDialog();
-    renderGenres();
-    applyFilter();
-    renderNowPlaying(player.nowPlaying());
+    retagAll();
+
+    if (byArtist) {
+      var n = tracks.filter(function (t) {
+        return Genres.normaliseArtist(t.artist) === Genres.normaliseArtist(artist);
+      }).length;
+      toast('Tagged ' + n + ' track' + (n === 1 ? '' : 's') + ' by ' + artist + '.');
+    }
   });
 
   els.tagdlgReset.addEventListener('click', function () {
     if (!editing) return closeTagDialog();
     Store.setOverride(editing, null);
-    var cached = Store.cacheGet(editing.id, editing.modifiedTime);
-    applyMetadata(editing, cached ? cached.meta : null);
+    if (editing.artist) Store.setArtistRule(editing.artist, null);
     closeTagDialog();
-    renderGenres();
-    applyFilter();
+    retagAll();
   });
 
   els.tagdlgCancel.addEventListener('click', closeTagDialog);
@@ -544,14 +587,56 @@
     loadLibrary().catch(function () {});
   });
 
-  els.setExport.addEventListener('click', function () {
-    var blob = new Blob([JSON.stringify(Store.getOverrides(), null, 2)],
-      { type: 'application/json' });
+  function download(name, data) {
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'drive-player-genres.json';
+    a.download = name;
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  els.setExport.addEventListener('click', function () {
+    download('drive-player-genres.json', {
+      version: 2,
+      artists: Store.getArtistRules(),
+      tracks: Store.getOverrides()
+    });
+  });
+
+  /* Writes out every artist the player could not place, with an empty tag
+   * list each, so the file can be filled in and imported straight back. */
+  els.setUntagged.addEventListener('click', function () {
+    var artists = {};
+    var namelessCount = 0;
+
+    tracks.forEach(function (t) {
+      if (t.tags.length && t.tags[0] !== 'Unsorted') return;
+      if (!t.artist) { namelessCount++; return; }
+      if (!artists[t.artist]) artists[t.artist] = [];
+    });
+
+    var names = Object.keys(artists).sort();
+    if (!names.length) {
+      toast(namelessCount ? 'Every named artist is tagged already.'
+                          : 'Nothing is untagged.');
+      return;
+    }
+
+    var out = {};
+    names.forEach(function (n) { out[n] = []; });
+
+    download('drive-player-untagged-artists.json', {
+      version: 2,
+      note: 'Fill in the tag lists, e.g. ["Synth", "Psych"], then import this ' +
+            'file from Settings. Anything left empty is ignored.',
+      genres: Genres.TAXONOMY.filter(function (g) { return g !== 'Unsorted'; }),
+      artists: out
+    });
+
+    toast('Exported ' + names.length + ' untagged artist' +
+      (names.length === 1 ? '' : 's') +
+      (namelessCount ? ' (' + namelessCount + ' file(s) have no artist at all)' : '') + '.');
   });
 
   els.setImport.addEventListener('click', function () { els.setFile.click(); });
@@ -561,18 +646,33 @@
     if (!file) return;
 
     file.text().then(function (text) {
-      var map = JSON.parse(text);
-      if (!map || typeof map !== 'object') throw new Error('not an object');
-      Store.replaceOverrides(map);
+      var data = JSON.parse(text);
+      if (!data || typeof data !== 'object') throw new Error('not an object');
 
-      tracks.forEach(function (t) {
-        var cached = Store.cacheGet(t.id, t.modifiedTime);
-        applyMetadata(t, cached ? cached.meta : null);
-      });
+      var artists = 0;
+      var trackEdits = 0;
 
-      renderGenres();
-      applyFilter();
-      toast('Imported ' + Object.keys(map).length + ' genre edits.');
+      if (data.artists || data.tracks) {
+        // Current format. Artist rules merge, so importing a file covering
+        // part of the library never wipes work already done.
+        if (data.artists) artists = Store.replaceArtistRules(data.artists, true);
+        if (data.tracks) {
+          Store.replaceOverrides(data.tracks);
+          trackEdits = Object.keys(data.tracks).length;
+        }
+      } else {
+        // The original export was a bare map of per-track edits.
+        Store.replaceOverrides(data);
+        trackEdits = Object.keys(data).length;
+      }
+
+      retagAll();
+
+      var parts = [];
+      if (artists) parts.push(artists + ' artist rule' + (artists === 1 ? '' : 's'));
+      if (trackEdits) parts.push(trackEdits + ' track edit' + (trackEdits === 1 ? '' : 's'));
+      toast(parts.length ? 'Imported ' + parts.join(' and ') + '.'
+                         : 'That file had nothing to import.');
     }).catch(function () {
       toast('That file did not look like an export.');
     });

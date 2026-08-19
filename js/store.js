@@ -1,10 +1,13 @@
 /* Everything the player remembers between visits, kept in localStorage.
  *
- * Three separate buckets so that clearing one does not disturb the others:
+ * Four separate buckets so that clearing one does not disturb the others:
  *   settings  - key, folder, volume, shuffle/repeat, last filter
  *   cache     - ID3 metadata per file, so a reload is instant
- *   overrides - genre tags the listener set by hand; the only bucket worth
- *               exporting, and the one the Export button writes out
+ *   overrides - genre tags the listener set on individual tracks
+ *   artists   - genre tags the listener set for a whole artist, which is how
+ *               a library gets tagged without touching every track
+ *
+ * The last two are what Export and Import move around.
  */
 (function (global) {
   'use strict';
@@ -12,7 +15,8 @@
   var KEYS = {
     settings: 'drivePlayer.settings.v1',
     cache: 'drivePlayer.metaCache.v1',
-    overrides: 'drivePlayer.genreOverrides.v1'
+    overrides: 'drivePlayer.genreOverrides.v1',
+    artists: 'drivePlayer.artistRules.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -47,6 +51,7 @@
   var settings = null;
   var cache = null;
   var overrides = null;
+  var artistRules = null;
 
   function getSettings() {
     if (!settings) {
@@ -146,6 +151,59 @@
     write(KEYS.overrides, overrides);
   }
 
+  /* Artist rules are keyed the way Genres normalises an artist, so "The
+   * Black Angels", "black angels, the" and "THE BLACK ANGELS" are one rule. */
+  function getArtistRules() {
+    if (!artistRules) artistRules = read(KEYS.artists, {});
+    return artistRules;
+  }
+
+  function artistKey(artist) {
+    return global.Genres ? global.Genres.normaliseArtist(artist)
+                         : String(artist || '').toLowerCase().trim();
+  }
+
+  /* Looks up every credited artist, so "Kavinsky feat. Lovefoxxx" still
+   * matches a rule saved for Kavinsky. */
+  function getArtistRule(artist) {
+    if (!artist) return null;
+    var rules = getArtistRules();
+    var direct = rules[artistKey(artist)];
+    if (direct) return direct;
+
+    var parts = String(artist).split(/\s*(?:feat\.?|ft\.?|featuring|with|vs\.?|,|&|\/)\s*/i);
+    for (var i = 0; i < parts.length; i++) {
+      var found = rules[artistKey(parts[i])];
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function setArtistRule(artist, tags) {
+    var rules = getArtistRules();
+    var key = artistKey(artist);
+    if (!key) return;
+    if (tags && tags.length) rules[key] = tags.slice();
+    else delete rules[key];
+    write(KEYS.artists, rules);
+  }
+
+  /* Accepts artist names as typed - they are normalised on the way in, so a
+   * hand-written or generated import file does not have to know the rules. */
+  function replaceArtistRules(map, merge) {
+    var rules = merge ? getArtistRules() : {};
+    Object.keys(map || {}).forEach(function (name) {
+      var tags = map[name];
+      var key = artistKey(name);
+      if (!key) return;
+      if (tags && tags.length) rules[key] = tags.slice();
+      else delete rules[key];
+    });
+    artistRules = rules;
+    write(KEYS.artists, rules);
+    return Object.keys(rules).length;
+  }
+
   global.Store = {
     getSettings: getSettings,
     saveSettings: saveSettings,
@@ -156,6 +214,10 @@
     getOverride: getOverride,
     setOverride: setOverride,
     replaceOverrides: replaceOverrides,
-    overrideKey: overrideKey
+    overrideKey: overrideKey,
+    getArtistRules: getArtistRules,
+    getArtistRule: getArtistRule,
+    setArtistRule: setArtistRule,
+    replaceArtistRules: replaceArtistRules
   };
 })(window);

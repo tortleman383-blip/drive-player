@@ -536,6 +536,25 @@ a { color: var(--accent); }
   margin-bottom: 16px;
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.check:hover { color: var(--text); }
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

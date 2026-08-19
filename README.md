@@ -70,13 +70,14 @@ house.
 
 Tags are worked out in this order, first hit wins:
 
-1. **Your own edit**, if you have made one.
-2. **The artist table** in `js/genres.js` — around 130 artists mapped to their
+1. **Your own edit** on that track, if you have made one.
+2. **Your own rule for that artist**, if you have made one.
+3. **The artist table** in `js/genres.js` — around 130 artists mapped to their
    genres. This is the one that does most of the work.
-3. **The ID3 genre frame** in the file, matched against keywords.
-4. **The album, title and filename**, matched the same way — this catches
+4. **The ID3 genre frame** in the file, matched against keywords.
+5. **The album, title and filename**, matched the same way — this catches
    things like `lofi study beat 3.mp3` or a `darksynth` mix.
-5. **Unsorted**, so nothing goes missing.
+6. **Unsorted**, so nothing goes missing.
 
 The artist comes from the file's ID3 tag when it has one. When it does not,
 it is read off the filename: `Artist - Title.mp3`, with leading track numbers,
@@ -86,11 +87,41 @@ underscores and `(Official Video)` noise stripped.
 
 Click any genre chip on a track to open the editor, toggle tags, and add your
 own in the text box (`Shoegaze`, `Late night`, whatever you like) — custom
-tags appear in the filter bar alongside the built-in ones. Edits are saved per
-track and survive reloads, renames in Drive, and re-uploads of the same song.
+tags appear in the filter bar alongside the built-in ones.
 
-**Settings → Export genres** writes them to a JSON file; **Import genres**
-reads one back, which is how you move them to another browser or phone.
+The editor's **Apply to everything by …** box is the one that matters for a
+library of any size: it saves a rule for that artist rather than that track,
+so every song by them — including ones you have not played, and ones added to
+Drive later — picks it up. A track edit still wins over an artist rule, so one
+odd song on an album can differ without breaking the rule.
+
+Edits survive reloads, renames in Drive, and re-uploads of the same song.
+
+### Tagging in bulk
+
+Filter to **Unsorted** to see what the player could not place, then:
+
+**Settings → Export untagged artists** writes a file listing every artist that
+needs a decision, each with an empty tag list, plus the genre vocabulary to
+choose from:
+
+```json
+{
+  "version": 2,
+  "artists": {
+    "Men I Trust": [],
+    "Yumi Zouma": []
+  }
+}
+```
+
+Fill in the lists — `["Indie", "Synth"]` — and **Settings → Import genres**
+puts them to work. Artist rules merge on import, so a file covering part of
+the library never wipes what is already there, and names are matched loosely
+(case, punctuation and a leading `the` do not matter).
+
+**Settings → Export genres** writes everything — artist rules and track edits
+— which is how you move your work to another browser or phone.
 
 To teach the player about an artist permanently rather than tagging track by
 track, add a line to `ARTISTS` in `js/genres.js`:
@@ -161,8 +192,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node music/tests/units.js                 # 21 tests, no dependencies
-npm i playwright && node music/tests/e2e.js   # 21 tests in a real browser
+node tests/units.js                      # 30 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 30 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,
