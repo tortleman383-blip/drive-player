@@ -16,7 +16,8 @@
     settings: 'drivePlayer.settings.v1',
     cache: 'drivePlayer.metaCache.v1',
     overrides: 'drivePlayer.genreOverrides.v1',
-    artists: 'drivePlayer.artistRules.v1'
+    artists: 'drivePlayer.artistRules.v1',
+    online: 'drivePlayer.onlineTags.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -52,6 +53,7 @@
   var cache = null;
   var overrides = null;
   var artistRules = null;
+  var onlineTags = null;
 
   function getSettings() {
     if (!settings) {
@@ -204,8 +206,38 @@
     return Object.keys(rules).length;
   }
 
+  /* What MusicBrainz said about an artist, kept forever. A miss is recorded
+   * too, so a fruitless lookup is never repeated - the rate limit makes
+   * asking twice genuinely expensive. */
+  function getOnlineTags() {
+    if (!onlineTags) onlineTags = read(KEYS.online, {});
+    return onlineTags;
+  }
+
+  function getOnline(artist) {
+    if (!artist) return null;
+    var entry = getOnlineTags()[artistKey(artist)];
+    return entry || null;
+  }
+
+  function setOnline(artist, tags, mbid) {
+    var all = getOnlineTags();
+    var key = artistKey(artist);
+    if (!key) return;
+    all[key] = { tags: (tags || []).slice(), mbid: mbid || '', at: Date.now() };
+    write(KEYS.online, all);
+  }
+
+  function clearOnline() {
+    onlineTags = {};
+    try { localStorage.removeItem(KEYS.online); } catch (e) {}
+  }
+
   global.Store = {
     getSettings: getSettings,
+    getOnline: getOnline,
+    setOnline: setOnline,
+    clearOnline: clearOnline,
     saveSettings: saveSettings,
     cacheGet: cacheGet,
     cacheSet: cacheSet,

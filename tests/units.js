@@ -18,11 +18,12 @@ var ctx = vm.createContext({
   fetch: function () { return Promise.reject(new Error('no network in tests')); }
 });
 
-['genres.js', 'id3.js', 'drive.js'].forEach(function (f) {
+['genres.js', 'musicbrainz.js', 'id3.js', 'drive.js'].forEach(function (f) {
   vm.runInContext(fs.readFileSync(path.join(JS, f), 'utf8'), ctx, { filename: f });
 });
 
 var Genres = win.Genres, ID3 = win.ID3, Drive = win.Drive;
+var MusicBrainz = win.MusicBrainz;
 
 // Arrays created inside the vm context have that context's Array prototype,
 // so compare copies rather than the originals.
@@ -266,6 +267,171 @@ test('Cowboy Bebop is tagged as the soundtrack it is', function () {
   assert.ok(Array.from(Genres.inferTags({ artist: 'The Seatbelts' })).indexOf('Jazz') !== -1);
   assert.ok(Array.from(Genres.inferTags({ artist: 'Cowboy Bebop' })).indexOf('Soundtrack') !== -1);
 });
+
+/* ---------- MusicBrainz ---------- */
+
+// Shapes taken from real ws/2 responses, trimmed to what is actually read.
+function mbResponses(map) {
+  return function (url) {
+    if (url.indexOf('/artist?') !== -1) {
+      // query=artist%3A%22Michael%20Jackson%22
+      var raw = decodeURIComponent((url.split('query=')[1] || '').split('&')[0]);
+      var quoted = raw.match(/"([^"]*)"/);
+      var name = quoted ? quoted[1] : raw.replace(/^artist:/, '');
+      var entry = map[name.toLowerCase()];
+      return Promise.resolve({
+        ok: true,
+        json: function () { return Promise.resolve({ artists: entry ? entry.search : [] }); }
+      });
+    }
+    var mbid = url.split('/artist/')[1].split('?')[0];
+    var found = null;
+    Object.keys(map).forEach(function (k) {
+      if (map[k].detail && map[k].detail.id === mbid) found = map[k].detail;
+    });
+    return Promise.resolve({
+      ok: true,
+      json: function () { return Promise.resolve(found || {}); }
+    });
+  };
+}
+
+test('Michael Jackson comes back as pop, R&B and funk', function () {
+  ctx.fetch = mbResponses({
+    'michael jackson': {
+      search: [{ id: 'mj-id', name: 'Michael Jackson', score: 100 }],
+      detail: {
+        id: 'mj-id', name: 'Michael Jackson',
+        genres: [{ name: 'pop' }, { name: 'r&b' }, { name: 'funk' }, { name: 'disco' }],
+        tags: [{ name: 'soul', count: 3 }]
+      }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Michael Jackson').then(function (r) {
+    assert.ok(r, 'no match returned');
+    assert.strictEqual(r.mbid, 'mj-id');
+    assert.ok(r.tags.indexOf('Pop') !== -1, String(r.tags));
+    assert.ok(r.tags.indexOf('R&B') !== -1, String(r.tags));
+    assert.ok(r.tags.indexOf('Funk') !== -1, String(r.tags));
+  });
+});
+
+test('Good Kid comes back as indie rock', function () {
+  ctx.fetch = mbResponses({
+    'good kid': {
+      search: [{ id: 'gk-id', name: 'Good Kid', score: 100 }],
+      detail: {
+        id: 'gk-id', name: 'Good Kid',
+        genres: [{ name: 'indie rock' }, { name: 'math rock' }],
+        tags: []
+      }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Good Kid').then(function (r) {
+    assert.ok(r, 'no match returned');
+    assert.ok(r.tags.indexOf('Indie') !== -1, String(r.tags));
+    assert.ok(r.tags.indexOf('Rock') !== -1, String(r.tags));
+  });
+});
+
+test('a misspelled name still matches on a high score', function () {
+  ctx.fetch = mbResponses({
+    'micheal jackson': {
+      search: [{ id: 'mj-id', name: 'Michael Jackson', score: 97 }],
+      detail: { id: 'mj-id', name: 'Michael Jackson', genres: [{ name: 'pop' }] }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Micheal Jackson').then(function (r) {
+    assert.ok(r, 'a near-miss spelling should still match');
+    assert.strictEqual(r.name, 'Michael Jackson');
+  });
+});
+
+test('a weak, non-matching result is rejected rather than guessed at', function () {
+  ctx.fetch = mbResponses({
+    'some local band': {
+      search: [{ id: 'x', name: 'Completely Different Band', score: 42 }],
+      detail: { id: 'x', genres: [{ name: 'metal' }] }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Some Local Band').then(function (r) {
+    assert.strictEqual(r, null, 'a low-scoring mismatch was accepted');
+  });
+});
+
+test('an exact name match beats a higher-scoring wrong one', function () {
+  ctx.fetch = mbResponses({
+    'air': {
+      search: [
+        { id: 'wrong', name: 'AIR (Japanese band)', score: 100 },
+        { id: 'right', name: 'Air', score: 88 }
+      ],
+      detail: { id: 'right', name: 'Air', genres: [{ name: 'ambient' }] }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Air').then(function (r) {
+    assert.strictEqual(r.mbid, 'right');
+  });
+});
+
+test('an artist with no genre data returns a match with no tags', function () {
+  ctx.fetch = mbResponses({
+    'obscure act': {
+      search: [{ id: 'o', name: 'Obscure Act', score: 100 }],
+      detail: { id: 'o', name: 'Obscure Act', genres: [], tags: [] }
+    }
+  });
+
+  return MusicBrainz.lookupArtist('Obscure Act').then(function (r) {
+    assert.ok(r, 'should still be a match');
+    assert.strictEqual(r.tags.length, 0);
+  });
+});
+
+test('a network failure resolves to null instead of throwing', function () {
+  ctx.fetch = function () { return Promise.reject(new Error('offline')); };
+  return MusicBrainz.lookupArtist('Anyone').then(function (r) {
+    assert.strictEqual(r, null);
+  });
+});
+
+test('lookups are spaced out to respect the rate limit', function () {
+  var calls = [];
+  ctx.fetch = function (url) {
+    calls.push(Date.now());
+    return mbResponses({
+      'a': { search: [{ id: 'a', name: 'A', score: 100 }], detail: { id: 'a', genres: [] } }
+    })(url);
+  };
+
+  var started = Date.now();
+  return Promise.all([
+    MusicBrainz.lookupArtist('A'),
+    MusicBrainz.lookupArtist('A')
+  ]).then(function () {
+    // Four requests (two per artist) cannot happen instantly.
+    assert.ok(calls.length >= 2, 'expected several requests, got ' + calls.length);
+    var elapsed = Date.now() - started;
+    assert.ok(elapsed >= MusicBrainz.GAP_MS,
+      'requests were not spaced out: ' + elapsed + 'ms for ' + calls.length + ' calls');
+  });
+});
+
+test('MusicBrainz tags outrank a filename guess but lose to the artist table',
+  function () {
+    var online = ['Metal'];
+    // Unknown artist: the online answer is used.
+    eqTags(Genres.inferTags({ artist: 'Nobody', title: 'lofi beat' }, null, null, online),
+      ['Metal']);
+    // Known artist: the curated table still wins.
+    var known = Genres.inferTags({ artist: 'Tame Impala' }, null, null, online);
+    assert.ok(Array.from(known).indexOf('Psych') !== -1, String(known));
+  });
 
 /* ---------- folder ids ---------- */
 

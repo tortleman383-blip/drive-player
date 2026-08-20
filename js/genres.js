@@ -254,12 +254,16 @@
    *
    * The track override wins over the artist rule so that one odd song on an
    * album can be re-tagged without breaking the rule for everything else. */
-  function inferTags(track, override, artistRule) {
+  function inferTags(track, override, artistRule, onlineTags) {
     if (override && override.length) return override.slice();
     if (artistRule && artistRule.length) return artistRule.slice();
 
     var tags = fromArtist(track.artist);
     if (tags.length) return tags;
+
+    // What MusicBrainz says about the artist beats anything guessed from the
+    // file, since it is about the act rather than one filename.
+    if (onlineTags && onlineTags.length) return onlineTags.slice();
 
     // The ID3 genre frame is the next most trustworthy signal, then whatever
     // the title and filename give away.
@@ -306,6 +310,7 @@
   global.Genres = {
     TAXONOMY: TAXONOMY,
     isKnownArtist: isKnownArtist,
+    tagsFromText: fromKeywords,
     findArtistIn: findArtistIn,
     ARTISTS: ARTISTS,
     inferTags: inferTags,

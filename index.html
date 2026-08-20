@@ -168,12 +168,15 @@
       Genre edits live on this device. Export them to keep a copy or move them
       to another browser. <b>Export untagged artists</b> writes a file listing
       every artist the player could not place, ready to be filled in and
-      imported back.
+      imported back. <b>Look up genres online</b> asks MusicBrainz about those
+      same artists — it sends their names, nothing else, and is limited to one
+      request a second, so a long list takes a few minutes.
     </p>
     <div class="dialog-actions wrap">
       <button id="set-export" class="ghost">Export genres</button>
       <button id="set-import" class="ghost">Import genres</button>
       <button id="set-untagged" class="ghost">Export untagged artists</button>
+      <button id="set-lookup" class="ghost">Look up genres online</button>
       <button id="set-clearcache" class="ghost">Clear metadata cache</button>
       <input id="set-file" type="file" accept="application/json,.json" hidden>
     </div>
@@ -188,6 +191,7 @@
 <audio id="audio" preload="metadata"></audio>
 
 <script src="js/genres.js"></script>
+<script src="js/musicbrainz.js"></script>
 <script src="js/id3.js"></script>
 <script src="js/store.js"></script>
 <script src="js/drive.js"></script>

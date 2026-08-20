@@ -9,6 +9,7 @@ music/
   index.html          the player
   css/player.css
   js/genres.js        taxonomy, artist table, tag inference
+  js/musicbrainz.js   rate-limited genre lookup
   js/id3.js           ID3v2 reader (v2.2 / v2.3 / v2.4)
   js/drive.js         Drive API client, filename parsing
   js/store.js         localStorage: settings, metadata cache, genre edits
@@ -72,12 +73,13 @@ Tags are worked out in this order, first hit wins:
 
 1. **Your own edit** on that track, if you have made one.
 2. **Your own rule for that artist**, if you have made one.
-3. **The artist table** in `js/genres.js` — around 130 artists mapped to their
+3. **The artist table** in `js/genres.js` — around 145 artists mapped to their
    genres. This is the one that does most of the work.
-4. **The ID3 genre frame** in the file, matched against keywords.
-5. **The album, title and filename**, matched the same way — this catches
+4. **MusicBrainz**, for any artist looked up (see below).
+5. **The ID3 genre frame** in the file, matched against keywords.
+6. **The album, title and filename**, matched the same way — this catches
    things like `lofi study beat 3.mp3` or a `darksynth` mix.
-6. **Unsorted**, so nothing goes missing.
+7. **Unsorted**, so nothing goes missing.
 
 The artist comes from the file's ID3 tag when it has one. When it does not,
 it is read off the filename, with leading track numbers, underscores and
@@ -111,6 +113,28 @@ Drive later — picks it up. A track edit still wins over an artist rule, so one
 odd song on an album can differ without breaking the rule.
 
 Edits survive reloads, renames in Drive, and re-uploads of the same song.
+
+### Letting MusicBrainz do it
+
+**Settings → Look up genres online** asks [MusicBrainz](https://musicbrainz.org)
+about every artist still sitting in Unsorted, and applies what comes back.
+This is the fastest way to tag a library full of artists nobody has hand-
+listed.
+
+What it sends is artist names, nothing else — no filenames, no folder id, no
+key. MusicBrainz asks anonymous clients for at most one request a second, and
+a browser cannot send a User-Agent identifying itself, so the player stays
+well inside that limit: roughly two seconds per artist, running in the
+background while you listen. Every answer is stored permanently, misses
+included, so nothing is ever asked twice.
+
+A wrong match is worse than no match — it puts a confident, incorrect genre
+across a whole artist — so a result is only accepted when the name really
+matches (including aliases) or MusicBrainz scores it above 90. That last part
+is what lets a misspelled `Micheal Jackson` still find the right person.
+
+Its answers rank below the built-in table and anything you set by hand, and
+above anything guessed from a filename.
 
 ### Tagging in bulk
 
@@ -210,8 +234,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 42 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 33 tests in a real browser
+node tests/units.js                      # 51 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 35 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

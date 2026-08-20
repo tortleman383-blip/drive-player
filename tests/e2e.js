@@ -809,6 +809,81 @@ async function main() {
     assert.ok(tags.indexOf('Jazz') !== -1, 'artist rule lost on reload: ' + tags);
   });
 
+  await step('looking up genres online places an artist the player did not know',
+    async function () {
+      // Grouper is in the fixture precisely because nothing can tag it.
+      await context.route('https://musicbrainz.org/**', function (route) {
+        var url = route.request().url();
+
+        if (url.indexOf('/artist?') !== -1) {
+          return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'Access-Control-Allow-Origin': '*' },
+            body: JSON.stringify({
+              artists: [{ id: 'grouper-id', name: 'Grouper', score: 100 }]
+            })
+          });
+        }
+
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: JSON.stringify({
+            id: 'grouper-id',
+            name: 'Grouper',
+            genres: [{ name: 'ambient' }, { name: 'dream pop' }],
+            tags: [{ name: 'drone', count: 2 }]
+          })
+        });
+      });
+
+      await page.click('#genres .chip >> text=/^All/');
+      await page.click('#btn-settings');
+      await page.waitForSelector('#setdlg:not([hidden])');
+      await page.click('#set-lookup');
+
+      await page.waitForFunction(function () {
+        var rows = document.querySelectorAll('.track');
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector('.track-artist').textContent !== 'Grouper') continue;
+          var tags = rows[i].querySelectorAll('.tag');
+          for (var j = 0; j < tags.length; j++) {
+            if (tags[j].textContent === 'Ambient') return true;
+          }
+        }
+        return false;
+      }, null, { timeout: 30000 });
+    });
+
+  await step('an online result survives a reload without asking again',
+    async function () {
+      var asked = 0;
+      await context.route('https://musicbrainz.org/**', function (route) {
+        asked++;
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: JSON.stringify({ artists: [] })
+        });
+      });
+
+      await page.reload();
+      await page.waitForSelector('#app:not([hidden])');
+      await page.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('.track'),
+          function (row) {
+            if (row.querySelector('.track-artist').textContent !== 'Grouper') return false;
+            return Array.prototype.some.call(row.querySelectorAll('.tag'),
+              function (t) { return t.textContent === 'Ambient'; });
+          });
+      }, null, { timeout: 15000 });
+
+      assert.strictEqual(asked, 0, 'MusicBrainz was queried again after caching');
+    });
+
   await step('a folder in the URL fragment pre-fills setup', async function () {
     var ctx4 = await browser.newContext();
     var page4 = await ctx4.newPage();

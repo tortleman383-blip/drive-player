@@ -26,7 +26,7 @@
     setdlg: $('setdlg'), setFolder: $('set-folder'), setKey: $('set-key'),
     setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
     setImport: $('set-import'), setFile: $('set-file'), setClearCache: $('set-clearcache'),
-    setUntagged: $('set-untagged'),
+    setUntagged: $('set-untagged'), setLookup: $('set-lookup'),
     toast: $('toast'), audio: $('audio')
   };
 
@@ -105,8 +105,10 @@
 
     var override = Store.getOverride(track);
     var artistRule = Store.getArtistRule(track.artist);
+    var online = Store.getOnline(track.artist);
 
-    track.tags = Genres.orderTags(Genres.inferTags(track, override, artistRule));
+    track.tags = Genres.orderTags(
+      Genres.inferTags(track, override, artistRule, online && online.tags));
     track.custom = !!(override || artistRule);
     track.haystack = [track.title, track.artist, track.album, track.fileName]
       .join(' ').toLowerCase();
@@ -674,6 +676,80 @@
   });
 
   els.setImport.addEventListener('click', function () { els.setFile.click(); });
+
+  /* Asks MusicBrainz about every artist still sitting in Unsorted. One
+   * request a second, so this is deliberately slow and deliberately visible;
+   * results land as they arrive rather than all at the end. */
+  var lookingUp = false;
+
+  els.setLookup.addEventListener('click', function () {
+    if (lookingUp) {
+      MusicBrainz.cancelAll();
+      lookingUp = false;
+      els.setLookup.textContent = 'Look up genres online';
+      setStatus('');
+      return;
+    }
+
+    var todo = [];
+    var seen = {};
+
+    tracks.forEach(function (t) {
+      if (!t.artist) return;
+      if (t.tags.length && t.tags[0] !== 'Unsorted') return;
+
+      var key = Genres.normaliseArtist(t.artist);
+      if (seen[key] || Store.getOnline(t.artist)) return;   // asked already
+      seen[key] = true;
+      todo.push(t.artist);
+    });
+
+    if (!todo.length) {
+      toast('Nothing left to look up.');
+      return;
+    }
+
+    lookingUp = true;
+    els.setLookup.textContent = 'Stop looking up';
+    els.setdlg.hidden = true;
+
+    var done = 0;
+    var found = 0;
+
+    // Rough, but honest: two requests per artist at ~1.1s each.
+    var estimate = Math.ceil((todo.length * 2 * MusicBrainz.GAP_MS) / 1000);
+    setStatus('Asking MusicBrainz about ' + todo.length + ' artist' +
+      (todo.length === 1 ? '' : 's') + ' — about ' +
+      (estimate > 90 ? Math.ceil(estimate / 60) + ' minutes' : estimate + ' seconds') +
+      '. You can keep listening.');
+
+    todo.forEach(function (artist) {
+      MusicBrainz.lookupArtist(artist).then(function (result) {
+        if (!lookingUp) return;
+        done++;
+
+        if (result) {
+          Store.setOnline(artist, result.tags, result.mbid);
+          if (result.tags.length) found++;
+        } else {
+          Store.setOnline(artist, [], '');   // remember the miss
+        }
+
+        if (done % 5 === 0 || done === todo.length) retagAll();
+
+        if (done === todo.length) {
+          lookingUp = false;
+          els.setLookup.textContent = 'Look up genres online';
+          retagAll();
+          setStatus('');
+          toast('MusicBrainz placed ' + found + ' of ' + todo.length + ' artists.');
+        } else {
+          setStatus('Asking MusicBrainz… ' + done + ' of ' + todo.length +
+            ' (' + found + ' placed so far). You can keep listening.');
+        }
+      });
+    });
+  });
 
   els.setFile.addEventListener('change', function () {
     var file = els.setFile.files[0];
