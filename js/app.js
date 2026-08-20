@@ -174,7 +174,7 @@
 
       renderGenres();
       renderView();
-      enrichAll();
+      enrichVisible();
       return tracks;
     }).catch(function (err) {
       els.refresh.disabled = false;
@@ -188,10 +188,21 @@
    * tag in as it arrives. Cached files are skipped, so this only costs
    * anything the first time a library is opened. */
 
+  /* Reading a tag costs a 256 KB range request per file. Doing that for a
+   * whole library at once is a burst of hundreds of requests to googleapis,
+   * which is enough for Google to decide a network is sending automated
+   * queries and block it outright - taking playback down with it.
+   *
+   * So: one request at a time, spaced, only for tracks actually on screen,
+   * and a hard ceiling per page load. Tags are a nicety; playback is not. */
   var enrichQueue = [];
+  var enrichQueued = {};
   var enrichActive = 0;
-  var ENRICH_CONCURRENCY = 2;    // gentle: this runs over the whole library
-  var ENRICH_GAP_MS = 120;
+  var ENRICH_CONCURRENCY = 1;
+  var ENRICH_GAP_MS = 400;
+  var ENRICH_WINDOW = 60;        // how far down the visible list to look
+  var ENRICH_BUDGET = 300;       // per page load, never per library
+  var enrichSpent = 0;
   var enrichFailures = 0;
   var enrichStopped = false;
   var redrawTimer = null;
@@ -205,12 +216,30 @@
     }, 400);
   }
 
-  function enrichAll() {
-    enrichQueue = tracks.filter(function (t) { return !t.tagged; });
-    enrichFailures = 0;
-    enrichStopped = false;
-    if (!enrichQueue.length) return;
-    for (var i = 0; i < ENRICH_CONCURRENCY; i++) enrichNext();
+  /* Queues tag reads for what the listener can actually see, plus whatever
+   * is playing. Called again whenever the view changes, so scrolling through
+   * a library fills it in gradually instead of all at once. */
+  function enrichVisible() {
+    if (enrichStopped || enrichSpent >= ENRICH_BUDGET) return;
+
+    var wanted = [];
+    var playing = player.nowPlaying();
+    if (playing && !playing.tagged) wanted.push(playing);
+
+    view.slice(0, ENRICH_WINDOW).forEach(function (t) {
+      if (!t.tagged) wanted.push(t);
+    });
+
+    var added = 0;
+    wanted.forEach(function (t) {
+      if (enrichQueued[t.id]) return;
+      enrichQueued[t.id] = true;
+      enrichQueue.push(t);
+      added++;
+    });
+
+    if (!added) return;
+    for (var i = enrichActive; i < ENRICH_CONCURRENCY; i++) enrichNext();
   }
 
   function enrichNext() {
@@ -219,8 +248,15 @@
       return;
     }
 
+    if (enrichSpent >= ENRICH_BUDGET) {
+      enrichStopped = true;
+      enrichQueue = [];
+      return;
+    }
+
     var track = enrichQueue.shift();
     enrichActive++;
+    enrichSpent++;
 
     Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
       if (!result.ok) {
@@ -232,7 +268,7 @@
         // hammering a key that is already being throttled only makes the
         // playback that matters worse.
         enrichFailures++;
-        if (enrichFailures >= 8 && !enrichStopped) {
+        if (enrichFailures >= 4 && !enrichStopped) {
           enrichStopped = true;
           enrichQueue = [];
         }
@@ -585,6 +621,7 @@
 
     els.list.appendChild(frag);
     els.main.scrollTop = scroll;   // redraws during tagging must not jump
+    enrichVisible();
   }
 
   function highlightPlaying() {
@@ -1119,6 +1156,7 @@
   /* ---------- player events ---------- */
 
   player.on('change', function (track) {
+    enrichVisible();
     renderNowPlaying(track);
     highlightPlaying();
     document.title = displayName(track) + ' — Drive Player';

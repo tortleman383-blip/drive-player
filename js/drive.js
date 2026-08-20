@@ -229,10 +229,11 @@
           status: 0,
           network: true,
           message: 'The request never reached Drive (' + (e && e.message) + '). ' +
-            'Either something between this page and googleapis.com is blocking ' +
-            'it — an extension, a network filter, or no connection — or Drive is ' +
-            'throttling the key and answering without the headers a browser ' +
-            'needs to read the reply.'
+            'If google.com pages are also refusing to load with "your computer ' +
+            'or network may be sending automated queries", Google has blocked ' +
+            'this network rather than this key, and it clears on its own — ' +
+            'trying another connection confirms it. Otherwise an extension, a ' +
+            'network filter, or a dropped connection is stopping the request.'
         };
       });
   }

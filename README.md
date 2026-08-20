@@ -226,11 +226,16 @@ Lock-screen and headset buttons work too, via the Media Session API.
 
 - **Metadata** is read by fetching only the first 256 KB of each file and
   parsing the ID3 tag out of it, then cached in `localStorage` keyed by Drive's
-  `modifiedTime`. The first load of a large folder does this in the background,
-  four files at a time; later loads are instant. A file is only recorded as
-  having no tag when Drive actually served its bytes — a refused request is
-  left untagged so the next load tries again, rather than writing down a
-  verdict that was never reached.
+  `modifiedTime`. A file is only recorded as having no tag when Drive actually
+  served its bytes — a refused request is left untagged so the next load tries
+  again, rather than writing down a verdict that was never reached.
+
+  Reading is deliberately slow and deliberately partial: one request at a
+  time, spaced, only for tracks on screen or playing, and no more than 300 per
+  page load. A tag read costs a request per file, so doing a whole library at
+  once is a burst of hundreds of requests to googleapis — enough for Google to
+  decide the network is sending automated queries and block it outright, which
+  takes playback down too. Tags are a nicety; playback is not.
 - **Artwork** is fetched for the playing track only, with a 20-item cache, so
   a big library does not accumulate decoded images.
 - **A file that will not play** is marked in the list and skipped rather than
