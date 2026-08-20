@@ -433,6 +433,83 @@ test('MusicBrainz tags outrank a filename guess but lose to the artist table',
     assert.ok(Array.from(known).indexOf('Psych') !== -1, String(known));
   });
 
+/* ---------- settings ---------- */
+
+test('every setting the player saves is declared, so none is dropped on read',
+  function () {
+    // getSettings rebuilds from DEFAULT_SETTINGS, so a key the app writes but
+    // does not declare is written and then lost on the next load. This caught
+    // exactly that with the browse tab.
+    var app = fs.readFileSync(path.join(JS, 'app.js'), 'utf8');
+    var store = fs.readFileSync(path.join(JS, 'store.js'), 'utf8');
+
+    var declared = (store.match(/DEFAULT_SETTINGS = \{([\s\S]*?)\}/) || [])[1] || '';
+    var saved = {};
+    var call = /saveSettings\(\{([^}]*)\}/g;
+    var m;
+
+    while ((m = call.exec(app))) {
+      m[1].split(',').forEach(function (pair) {
+        var key = pair.split(':')[0].trim();
+        if (key) saved[key] = true;
+      });
+    }
+
+    Object.keys(saved).forEach(function (key) {
+      assert.ok(new RegExp('\\b' + key + '\\s*:').test(declared),
+        '"' + key + '" is saved by app.js but missing from DEFAULT_SETTINGS');
+    });
+  });
+
+/* ---------- filename junk ---------- */
+
+test('site stamps left by rippers are removed, bracketed or not', function () {
+  var a = Drive.parseFileName('spotdown.org - Tame Impala - Elephant.mp3');
+  assert.strictEqual(a.artist, 'Tame Impala');
+  assert.strictEqual(a.title, 'Elephant');
+
+  var b = Drive.parseFileName('Tame Impala - Elephant [SPOTDOWN.ORG].mp3');
+  assert.strictEqual(b.artist, 'Tame Impala');
+  assert.strictEqual(b.title, 'Elephant');
+
+  var c = Drive.parseFileName('Air - La Femme d Argent (www.mp3juices.cc).mp3');
+  assert.strictEqual(c.artist, 'Air');
+  assert.strictEqual(c.title, 'La Femme d Argent');
+});
+
+test('sync collision markers are removed', function () {
+  var a = Drive.parseFileName('Weezer - Buddy Holly (sync conflict).mp3');
+  assert.strictEqual(a.title, 'Buddy Holly');
+
+  var b = Drive.parseFileName("C418 - Sweden (Marc's conflicted copy 2024-03-02).mp3");
+  assert.strictEqual(b.title, 'Sweden');
+
+  var c = Drive.parseFileName('MGMT - Kids - Copy.mp3');
+  assert.strictEqual(c.title, 'Kids');
+});
+
+test('duplicate and bitrate markers are removed', function () {
+  assert.strictEqual(Drive.parseFileName('Michael Jackson - Beat It (1).mp3').title, 'Beat It');
+  assert.strictEqual(Drive.parseFileName('Grimes - Oblivion 320kbps.mp3').title, 'Oblivion');
+  assert.strictEqual(Drive.parseFileName('Grimes - Oblivion [FLAC].mp3').title, 'Oblivion');
+});
+
+test('parentheses that say something about the music are kept', function () {
+  // The bar for removal is "carries no information about the music".
+  assert.strictEqual(
+    Drive.parseFileName('Nirvana - Something In The Way (Live).mp3').title,
+    'Something In The Way (Live)');
+  assert.strictEqual(
+    Drive.parseFileName('Tame Impala - Borderline (Blood Orange Remix).mp3').title,
+    'Borderline (Blood Orange Remix)');
+});
+
+test('a name that is nothing but junk does not become empty', function () {
+  var r = Drive.parseFileName('spotdown.org.mp3');
+  assert.ok(r.title.length >= 0);   // must not throw
+  assert.strictEqual(r.artist, '');
+});
+
 /* ---------- folder ids ---------- */
 
 test('pulls the folder id out of every link shape', function () {

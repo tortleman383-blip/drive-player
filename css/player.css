@@ -234,6 +234,97 @@ a { color: var(--accent); }
   color: #0d1020;
 }
 
+/* ---------- browse tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 16px 0;
+}
+
+.tab {
+  padding: 7px 14px;
+  border-radius: 8px 8px 0 0;
+  color: var(--text-faint);
+  font-size: 13.5px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+
+.tab:hover { color: var(--text); }
+
+.tab.on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---------- browse grid ---------- */
+
+.browse {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 14px;
+  border-radius: 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  text-align: left;
+  min-width: 0;
+}
+
+.card:hover { border-color: var(--accent); background: var(--bg-hover); }
+
+.card-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-sub {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-count {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin: 4px 8px 2px;
+  font-weight: 600;
+}
+
+.crumb-count {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ghost.small {
+  padding: 5px 11px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 /* ---------- genre bar ---------- */
 
 .genrebar {

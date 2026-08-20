@@ -62,6 +62,20 @@ otherwise. Do not add an HTTP-referrer restriction if you open the page as a
 Nothing is uploaded, and no audio is copied: tracks stream from Drive as they
 play.
 
+## Browsing
+
+Three tabs above the list:
+
+- **Genres** — the chip bar, filtering the whole library by tag.
+- **Artists** — every artist with a track count, most-played-by-you first.
+- **Albums** — the same for albums, read from ID3. Tracks with no album
+  information are grouped under *No album* rather than hidden, and an album
+  credited to several artists shows as *Various artists*.
+
+Picking an artist or album filters the list to it; **Back** returns to the
+grid. Search narrows whichever view is showing, including the grids. The tab
+you were last on is remembered.
+
 ## Genres
 
 Every track carries a *list* of tags rather than a single genre, which is what
@@ -84,6 +98,14 @@ Tags are worked out in this order, first hit wins:
 The artist comes from the file's ID3 tag when it has one. When it does not,
 it is read off the filename, with leading track numbers, underscores and
 `(Official Video)` noise stripped.
+
+Junk that rippers and sync clients leave behind is stripped first: site
+stamps (`[SPOTDOWN.ORG]`, `(y2mate.com)`, bare `www.` addresses), bitrate and
+format markers (`320kbps`, `[FLAC]`), cloud collision markers (`(sync
+conflict)`, `(Marc's conflicted copy 2024-03-02)`, `- Copy`) and trailing
+duplicate numbers (`Song (1)`). The bar for removal is that it says nothing
+about the music, so `(Live)`, `(Acoustic)` and `(Blood Orange Remix)` all
+survive.
 
 When a filename is a bare title with no artist in it at all, two last
 resorts apply: a known multi-word artist sitting at the front of the name
@@ -234,8 +256,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 51 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 35 tests in a real browser
+node tests/units.js                      # 57 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 40 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

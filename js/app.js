@@ -9,6 +9,9 @@
     setupGo: $('setup-go'), setupError: $('setup-error'),
     app: $('app'), search: $('search'), refresh: $('btn-refresh'),
     main: document.querySelector('.main'),
+    tabs: document.querySelectorAll('.tab'),
+    browse: $('browse'), crumb: $('crumb'), crumbBack: $('crumb-back'),
+    crumbLabel: $('crumb-label'), crumbCount: $('crumb-count'),
     settings: $('btn-settings'), genres: $('genres'), status: $('status'),
     list: $('tracklist'), empty: $('empty'),
     npImg: $('np-img'), npTitle: $('np-title'), npArtist: $('np-artist'),
@@ -36,6 +39,8 @@
   var tracks = [];       // everything in the folder
   var view = [];         // what the filter and search leave visible
   var genre = settings.genre || 'All';
+  var facet = settings.facet || 'genre';    // genre | artist | album
+  var picked = null;                        // { type, key, label } while browsing
   var query = '';
   var editing = null;    // track open in the tag dialog
 
@@ -157,7 +162,7 @@
       }
 
       renderGenres();
-      applyFilter();
+      renderView();
       enrichAll();
       return tracks;
     }).catch(function (err) {
@@ -182,7 +187,7 @@
     redrawTimer = setTimeout(function () {
       redrawTimer = null;
       renderGenres();
-      applyFilter();
+      renderView();
     }, 400);
   }
 
@@ -289,8 +294,26 @@
 
   /* ---------- filtering ---------- */
 
+  var NO_ALBUM = '\u0000none';   // sorts nowhere near a real album name
+
+  function albumKey(track) {
+    return track.album ? track.album.toLowerCase().trim() : NO_ALBUM;
+  }
+
+  function artistKey(track) {
+    return Genres.normaliseArtist(track.artist);
+  }
+
   function matches(track) {
-    if (genre !== 'All' && track.tags.indexOf(genre) === -1) return false;
+    // The genre chips belong to the Genres tab; browsing by artist or album
+    // is its own axis rather than something stacked on top of a genre.
+    if (facet === 'genre' && genre !== 'All' && track.tags.indexOf(genre) === -1) return false;
+
+    if (picked) {
+      var key = picked.type === 'artist' ? artistKey(track) : albumKey(track);
+      if (key !== picked.key) return false;
+    }
+
     if (query && track.haystack.indexOf(query) === -1) return false;
     return true;
   }
@@ -299,6 +322,121 @@
     view = tracks.filter(matches);
     player.setQueue(view);
     renderList();
+  }
+
+  /* ---------- browsing by artist or album ---------- */
+
+  /* Groups the library on whichever facet is showing. Returns entries sorted
+   * so the acts you have most of come first, which is nearly always the
+   * order you want to browse in. */
+  function groupBy(type) {
+    var groups = {};
+
+    tracks.forEach(function (t) {
+      var key = type === 'artist' ? artistKey(t) : albumKey(t);
+      if (type === 'artist' && !key) return;   // no artist to group under
+
+      if (!groups[key]) {
+        groups[key] = {
+          key: key,
+          label: type === 'artist' ? (t.artist || 'Unknown artist')
+                                   : (t.album || 'No album'),
+          sub: type === 'album' ? (t.artist || '') : '',
+          count: 0
+        };
+      }
+
+      groups[key].count++;
+      // One album can credit several artists; say so rather than picking one.
+      if (type === 'album' && groups[key].sub && t.artist &&
+          groups[key].sub !== t.artist) {
+        groups[key].sub = 'Various artists';
+      }
+    });
+
+    return Object.keys(groups).map(function (k) { return groups[k]; })
+      .sort(function (a, b) {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.label.localeCompare(b.label);
+      });
+  }
+
+  function renderBrowse() {
+    var entries = groupBy(facet);
+
+    if (query) {
+      entries = entries.filter(function (e) {
+        return (e.label + ' ' + e.sub).toLowerCase().indexOf(query) !== -1;
+      });
+    }
+
+    els.browse.textContent = '';
+    els.empty.hidden = entries.length > 0;
+
+    var frag = document.createDocumentFragment();
+
+    entries.forEach(function (entry) {
+      var card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'card';
+
+      var name = document.createElement('span');
+      name.className = 'card-name';
+      name.textContent = entry.label;
+      card.appendChild(name);
+
+      if (entry.sub) {
+        var sub = document.createElement('span');
+        sub.className = 'card-sub';
+        sub.textContent = entry.sub;
+        card.appendChild(sub);
+      }
+
+      var count = document.createElement('span');
+      count.className = 'card-count';
+      count.textContent = entry.count + (entry.count === 1 ? ' track' : ' tracks');
+      card.appendChild(count);
+
+      card.addEventListener('click', function () {
+        picked = { type: facet, key: entry.key, label: entry.label };
+        renderView();
+        els.main.scrollTop = 0;
+      });
+
+      frag.appendChild(card);
+    });
+
+    els.browse.appendChild(frag);
+  }
+
+  /* Decides which of the three panels - genre chips, browse grid, track list
+   * - is on screen, and keeps them in step with the current facet. */
+  function renderView() {
+    var browsing = facet !== 'genre' && !picked;
+
+    els.genres.hidden = facet !== 'genre';
+    els.browse.hidden = !browsing;
+    els.list.hidden = browsing;
+    els.crumb.hidden = !picked;
+
+    els.tabs.forEach(function (tab) {
+      tab.classList.toggle('on', tab.dataset.facet === facet);
+    });
+
+    if (browsing) {
+      renderBrowse();
+      return;
+    }
+
+    if (picked) {
+      els.crumbLabel.textContent = picked.label;
+    }
+
+    applyFilter();
+
+    if (picked) {
+      els.crumbCount.textContent = view.length + (view.length === 1 ? ' track' : ' tracks');
+    }
   }
 
   function genreCounts() {
@@ -339,7 +477,7 @@
         genre = g;
         Store.saveSettings({ genre: g });
         renderGenres();
-        applyFilter();
+        renderView();
         els.main.scrollTop = 0;
       });
 
@@ -495,7 +633,7 @@
       applyMetadata(t, cached ? cached.meta : null);
     });
     renderGenres();
-    applyFilter();
+    renderView();
     renderNowPlaying(player.nowPlaying());
   }
 
@@ -821,9 +959,26 @@
     renderState();
   });
 
+  els.tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      if (facet === tab.dataset.facet && !picked) return;
+      facet = tab.dataset.facet;
+      picked = null;
+      Store.saveSettings({ facet: facet });
+      renderView();
+      els.main.scrollTop = 0;
+    });
+  });
+
+  els.crumbBack.addEventListener('click', function () {
+    picked = null;
+    renderView();
+    els.main.scrollTop = 0;
+  });
+
   els.search.addEventListener('input', function () {
     query = els.search.value.trim().toLowerCase();
-    applyFilter();
+    renderView();
   });
 
   els.refresh.addEventListener('click', function () { loadLibrary().catch(function () {}); });

@@ -26,7 +26,8 @@
     volume: 0.8,
     shuffle: false,
     repeat: 'all',   // 'off' | 'all' | 'one'
-    genre: 'All'
+    genre: 'All',
+    facet: 'genre'   // genre | artist | album
   };
 
   function read(key, fallback) {
@@ -55,6 +56,8 @@
   var artistRules = null;
   var onlineTags = null;
 
+  /* Only keys listed in DEFAULT_SETTINGS survive a round trip - anything
+   * else is dropped on read, so a new setting has to be declared there. */
   function getSettings() {
     if (!settings) {
       var stored = read(KEYS.settings, {});

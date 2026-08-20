@@ -226,21 +226,53 @@
 
   var NOISE = /\s*[\(\[](?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?|visualizer|hd|hq|4k|full\s*album|remaster(?:ed)?(?:\s*\d{4})?|explicit|clean)[\)\]]\s*/gi;
 
+  /* Junk that rippers and sync clients leave in filenames. Each of these is
+   * something that carries no information about the music, which is the bar
+   * for removal - "(Live)" and "(Acoustic)" say something real and stay. */
+  var CLEANERS = [
+    // Anything bracketed containing a web address: [SPOTDOWN.ORG], (y2mate.com)
+    /\s*[\(\[\{][^\)\]\}]*\b[a-z0-9-]+\.(?:com|org|net|io|co|me|cc|to|info|xyz|ru|in|app)\b[^\)\]\}]*[\)\]\}]/gi,
+    // The same sites unbracketed, with or without the suffix
+    /\s*\b(?:spotdown|spotifydown|spotmate|y2mate|ytmp3|yt1s|mp3juices?|tubidy|savefrom|snapsave|slider\.kz|doubledouble)\b(?:\.[a-z]{2,4})?/gi,
+    // Bare domains anywhere else in the name
+    /\s*\b(?:www\.)[a-z0-9-]+\.[a-z]{2,4}\b/gi,
+    // Bitrate and sample-rate stamps
+    /\s*[\(\[]?\b\d{2,3}\s*kbps\b[\)\]]?/gi,
+    /\s*[\(\[]\s*(?:flac|wav|m4a|mp3|24\s*bit|16\s*bit|\d{2,3}\s*k)\s*[\)\]]/gi,
+    // Drive, Dropbox and OneDrive collision markers
+    /\s*[\(\[][^\)\]]*\b(?:sync conflict|conflicted copy|case conflict|conflicted version)\b[^\)\]]*[\)\]]/gi,
+    /\s*[-–—]\s*(?:sync conflict|copy)\b.*$/gi,
+    /\s*\(\s*copy\s*\)/gi,
+    /\s*[-–—]\s*copy\s*$/gi,
+    // Trailing duplicate markers left by a second download: "Song (1)"
+    /\s*\(\s*\d{1,2}\s*\)\s*$/g
+  ];
+
+  // Separators and punctuation stranded by the removals above.
+  var STRANDED = /^[\s\-–—_.,·|]+|[\s\-–—_.,·|]+$/g;
+
   /* Best-effort artist/title from a filename, for files with no ID3 tag. */
   function parseFileName(name) {
     var s = String(name || '').replace(/\.[a-z0-9]{2,4}$/i, '');
-    s = s.replace(/_/g, ' ').replace(NOISE, ' ').replace(/\s+/g, ' ').trim();
+    s = s.replace(/_/g, ' ').replace(NOISE, ' ');
+
+    CLEANERS.forEach(function (rule) { s = s.replace(rule, ' '); });
+
+    s = s.replace(/\s+/g, ' ').replace(STRANDED, '').trim();
     s = s.replace(/^\d{1,3}\s*[-.)]\s*/, '');       // leading track number
     s = s.replace(/^\d{1,3}\s+(?=\D)/, '');
 
-    var parts = s.split(/\s+[-–—]\s+/);
+    var parts = s.split(/\s+[-–—]\s+/).filter(function (part) {
+      return part.trim();   // a stripped-out site name can leave a gap
+    });
+
     if (parts.length >= 2) {
       return {
-        artist: parts[0].trim(),
-        title: parts.slice(1).join(' - ').trim()
+        artist: parts[0].replace(STRANDED, '').trim(),
+        title: parts.slice(1).join(' - ').replace(STRANDED, '').trim()
       };
     }
-    return { artist: '', title: s };
+    return { artist: '', title: (parts[0] || s).replace(STRANDED, '').trim() };
   }
 
   /* Filenames arrive in both orders - "Weezer - Say It Ain't So" and

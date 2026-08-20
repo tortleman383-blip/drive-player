@@ -884,6 +884,95 @@ async function main() {
       assert.strictEqual(asked, 0, 'MusicBrainz was queried again after caching');
     });
 
+  /* ---- browsing by artist and album ---- */
+
+  await step('the Artists tab lists artists with their track counts',
+    async function () {
+      await page.click('.tab[data-facet="artist"]');
+      await page.waitForSelector('#browse:not([hidden])');
+
+      assert.ok(await page.$eval('#genres', function (e) { return e.hidden; }),
+        'genre chips should be hidden while browsing artists');
+      assert.ok(await page.$eval('#tracklist', function (e) { return e.hidden; }),
+        'the track list should be hidden while browsing');
+
+      var names = await page.$$eval('.card-name', function (els) {
+        return els.map(function (e) { return e.textContent; });
+      });
+      assert.ok(names.indexOf('Tame Impala') !== -1, 'Tame Impala missing: ' + names);
+      assert.ok(names.indexOf('Weezer') === -1, 'an artist not in the library was listed');
+
+      // Three in the fixture: the dash-named one, the title-first one, and
+      // the bare title in its own folder.
+      var count = await page.$$eval('.card', function (cards) {
+        for (var i = 0; i < cards.length; i++) {
+          if (cards[i].querySelector('.card-name').textContent === 'Tame Impala') {
+            return cards[i].querySelector('.card-count').textContent;
+          }
+        }
+        return '';
+      });
+      assert.strictEqual(count, '3 tracks', 'wrong count: ' + count);
+    });
+
+  await step('picking an artist shows only their tracks, and Back returns',
+    async function () {
+      await page.click('.card:has(.card-name:text-is("Tame Impala"))');
+      await page.waitForSelector('#crumb:not([hidden])');
+
+      assert.strictEqual(await page.textContent('#crumb-label'), 'Tame Impala');
+
+      var artists = await page.$$eval('.track-artist', function (els) {
+        return els.map(function (e) { return e.textContent; });
+      });
+      assert.strictEqual(artists.length, 3, 'expected 3 tracks: ' + artists);
+      artists.forEach(function (a) { assert.strictEqual(a, 'Tame Impala'); });
+
+      await page.click('#crumb-back');
+      await page.waitForSelector('#browse:not([hidden])');
+      assert.ok(await page.$eval('#crumb', function (e) { return e.hidden; }));
+    });
+
+  await step('the Albums tab groups by album, including tracks with none',
+    async function () {
+      await page.click('.tab[data-facet="album"]');
+      await page.waitForSelector('#browse:not([hidden])');
+
+      var names = await page.$$eval('.card-name', function (els) {
+        return els.map(function (e) { return e.textContent; });
+      });
+      assert.ok(names.indexOf('Dangerous Days') !== -1,
+        'the album read from ID3 is missing: ' + names);
+      assert.ok(names.indexOf('No album') !== -1,
+        'tracks without an album should still be reachable: ' + names);
+    });
+
+  await step('search filters the browse grid too', async function () {
+    await page.click('.tab[data-facet="artist"]');
+    await page.waitForSelector('#browse:not([hidden])');
+    await page.fill('#search', 'tame');
+
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#browse .card').length === 1;
+    });
+
+    await page.fill('#search', '');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#browse .card').length > 1;
+    });
+  });
+
+  await step('the chosen tab survives a reload', async function () {
+    await page.reload();
+    await page.waitForSelector('#app:not([hidden])');
+    await page.waitForSelector('#browse:not([hidden])');
+    assert.ok(await page.$eval('.tab[data-facet="artist"]',
+      function (e) { return e.classList.contains('on'); }), 'tab not restored');
+
+    await page.click('.tab[data-facet="genre"]');
+    await page.waitForSelector('#genres:not([hidden])');
+  });
+
   await step('a folder in the URL fragment pre-fills setup', async function () {
     var ctx4 = await browser.newContext();
     var page4 = await ctx4.newPage();

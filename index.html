@@ -74,10 +74,24 @@
     </button>
   </header>
 
+  <nav class="tabs" role="tablist" aria-label="Browse by">
+    <button class="tab on" data-facet="genre" role="tab">Genres</button>
+    <button class="tab" data-facet="artist" role="tab">Artists</button>
+    <button class="tab" data-facet="album" role="tab">Albums</button>
+  </nav>
+
   <nav id="genres" class="genrebar" aria-label="Filter by genre"></nav>
 
   <main class="main">
     <div id="status" class="status" hidden></div>
+
+    <div id="crumb" class="crumb" hidden>
+      <button id="crumb-back" class="ghost small">← Back</button>
+      <span id="crumb-label"></span>
+      <span id="crumb-count" class="crumb-count"></span>
+    </div>
+
+    <div id="browse" class="browse" hidden></div>
     <ol id="tracklist" class="tracklist"></ol>
     <p id="empty" class="empty" hidden>Nothing here. Try another genre or clear the search.</p>
   </main>
