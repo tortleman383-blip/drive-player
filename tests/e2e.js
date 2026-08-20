@@ -41,7 +41,8 @@ FILES[FOLDER] = [
   { id: ARTIST_FOLDER, name: 'Tame Impala', mimeType: 'application/vnd.google-apps.folder' }
 ];
 FILES[SUBFOLDER] = [
-  { id: 'f6', name: 'Boards of Canada - Roygbiv.mp3', mimeType: 'audio/mpeg' }
+  { id: 'f6', name: 'Boards of Canada - Roygbiv.mp3', mimeType: 'audio/mpeg' },
+  { id: 'f10', name: 'Nujabes - Feather.mp3', mimeType: 'audio/mpeg' }
 ];
 FILES[ARTIST_FOLDER] = [
   { id: 'f9', name: 'Elephant.mp3', mimeType: 'audio/mpeg' }   // bare title
@@ -247,7 +248,7 @@ async function main() {
     var titles = await page.$$eval('.track-title', function (els) {
       return els.map(function (e) { return e.textContent; });
     });
-    assert.strictEqual(titles.length, 9, 'expected 9 tracks, got ' + titles.length + ': ' + titles);
+    assert.strictEqual(titles.length, 10, 'expected 10 tracks, got ' + titles.length + ': ' + titles);
     assert.ok(titles.some(function (t) { return /Roygbiv/.test(t); }), 'subfolder track missing');
     assert.ok(!titles.some(function (t) { return /cover/i.test(t); }), 'image was listed');
   });
@@ -342,7 +343,7 @@ async function main() {
   await step('All brings everything back', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 9;
+      return document.querySelectorAll('#tracklist .track').length === 10;
     });
   });
 
@@ -355,7 +356,7 @@ async function main() {
     });
     await page.fill('#search', '');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 9;
+      return document.querySelectorAll('#tracklist .track').length === 10;
     });
   });
 
@@ -429,8 +430,8 @@ async function main() {
       });
       var unique = {};
       order.forEach(function (i) { unique[i] = true; });
-      assert.strictEqual(order.length, 9, 'order length ' + order.length);
-      assert.strictEqual(Object.keys(unique).length, 9, 'shuffle dropped or repeated entries');
+      assert.strictEqual(order.length, 10, 'order length ' + order.length);
+      assert.strictEqual(Object.keys(unique).length, 10, 'shuffle dropped or repeated entries');
     });
 
   /* ---- tagging ---- */
@@ -481,7 +482,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 9;
+      return document.querySelectorAll('#tracklist .track').length === 10;
     });
 
     var chips = await page.$$eval('#genres .chip', function (els) {
@@ -688,7 +689,7 @@ async function main() {
   await step('tagging by artist covers every track by them', async function () {
     await page.click('#genres .chip >> text=/^All/');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 9;
+      return document.querySelectorAll('#tracklist .track').length === 10;
     });
 
     // "untitled demo 2.mp3" has no artist and no tags; Boards of Canada does.
@@ -797,7 +798,7 @@ async function main() {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
     await page.waitForFunction(function () {
-      return document.querySelectorAll('#tracklist .track').length === 9;
+      return document.querySelectorAll('#tracklist .track').length === 10;
     });
 
     var tags = await page.evaluate(function () {
@@ -884,6 +885,33 @@ async function main() {
       assert.strictEqual(asked, 0, 'MusicBrainz was queried again after caching');
     });
 
+  await step('the genre bar is a bar and the list gets the room', async function () {
+    // The app is a grid with one row per child. An extra child with no row of
+    // its own takes the 1fr, and the genre chips balloon while the list is
+    // squeezed to nothing - which is exactly what adding the tabs did.
+    await page.click('.tab[data-facet="genre"]');
+    await page.waitForSelector('#genres:not([hidden])');
+
+    var sizes = await page.evaluate(function () {
+      var box = function (sel) {
+        return document.querySelector(sel).getBoundingClientRect().height;
+      };
+      return {
+        genres: box('#genres'),
+        main: box('.main'),
+        chip: document.querySelector('#genres .chip').getBoundingClientRect(),
+        viewport: window.innerHeight
+      };
+    });
+
+    assert.ok(sizes.genres < 90,
+      'the genre bar should be a bar, not ' + Math.round(sizes.genres) + 'px');
+    assert.ok(sizes.main > sizes.viewport / 3,
+      'the track list got squeezed to ' + Math.round(sizes.main) + 'px');
+    assert.ok(sizes.chip.height > 22 && sizes.chip.width > 40,
+      'genre chips collapsed: ' + JSON.stringify(sizes.chip));
+  });
+
   /* ---- browsing by artist and album ---- */
 
   await step('the Artists tab lists artists with their track counts',
@@ -946,6 +974,82 @@ async function main() {
       assert.ok(names.indexOf('No album') !== -1,
         'tracks without an album should still be reachable: ' + names);
     });
+
+  await step('an album can be applied to a whole folder at once', async function () {
+    // Two tracks by different artists sit in "Deep Cuts"; naming the album
+    // once should pull both together, the way a soundtrack needs.
+    await page.click('.tab[data-facet="genre"]');
+    await page.waitForSelector('#tracklist:not([hidden])');
+    await page.click('.track:has(.track-artist:text-is("Boards of Canada")) .track-tags .tag');
+    await page.waitForSelector('#tagdlg:not([hidden])');
+
+    assert.ok(!(await page.$eval('#tagdlg-folderrow', function (e) { return e.hidden; })),
+      'the folder option should be offered for a track in a folder');
+
+    await page.fill('#tagdlg-album', 'Deep Cuts Compilation');
+    await page.check('#tagdlg-folder');
+    await page.click('#tagdlg-save');
+    await page.waitForFunction(function () { return document.getElementById('tagdlg').hidden; });
+
+    var albums = await page.evaluate(function () {
+      return window.DrivePlayer.tracks().filter(function (t) {
+        return t.folder === 'Deep Cuts';
+      }).map(function (t) { return t.album; });
+    });
+
+    assert.strictEqual(albums.length, 2, 'expected 2 tracks in the folder');
+    albums.forEach(function (a) {
+      assert.strictEqual(a, 'Deep Cuts Compilation', 'album not applied: ' + albums);
+    });
+
+    await page.click('.tab[data-facet="album"]');
+    await page.waitForSelector('#browse:not([hidden])');
+
+    var card = await page.$$eval('.card', function (cards) {
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].querySelector('.card-name').textContent === 'Deep Cuts Compilation') {
+          return {
+            count: cards[i].querySelector('.card-count').textContent,
+            sub: cards[i].querySelector('.card-sub') ?
+              cards[i].querySelector('.card-sub').textContent : ''
+          };
+        }
+      }
+      return null;
+    });
+
+    assert.ok(card, 'the folder album is not in the Albums grid');
+    assert.strictEqual(card.count, '2 tracks');
+    assert.strictEqual(card.sub, 'Various artists',
+      'an album spanning artists should say so, got: ' + card.sub);
+
+    // The artist box opens pre-filled; saving folder-wide without touching it
+    // must not rename everyone in the folder to the track that was clicked.
+    var artists = await page.evaluate(function () {
+      return window.DrivePlayer.tracks().filter(function (t) {
+        return t.folder === 'Deep Cuts';
+      }).map(function (t) { return t.artist; }).sort();
+    });
+    assert.deepStrictEqual(artists, ['Boards of Canada', 'Nujabes'],
+      'an untouched artist field overwrote the folder: ' + artists);
+  });
+
+  await step('a folder album survives a reload', async function () {
+    await page.reload();
+    await page.waitForSelector('#app:not([hidden])');
+    await page.waitForFunction(function () {
+      return window.DrivePlayer && window.DrivePlayer.tracks().length === 10;
+    });
+
+    var albums = await page.evaluate(function () {
+      return window.DrivePlayer.tracks().filter(function (t) {
+        return t.folder === 'Deep Cuts';
+      }).map(function (t) { return t.album; });
+    });
+    albums.forEach(function (a) {
+      assert.strictEqual(a, 'Deep Cuts Compilation', 'folder rule lost on reload');
+    });
+  });
 
   await step('search filters the browse grid too', async function () {
     await page.click('.tab[data-facet="artist"]');

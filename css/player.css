@@ -171,7 +171,9 @@ a { color: var(--accent); }
 .app {
   height: 100%;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  /* topbar, tabs, genre bar, list, now playing. One row per child: an extra
+     child with no row of its own takes the 1fr and squashes everything. */
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
 
 .topbar {
@@ -618,6 +620,16 @@ a { color: var(--accent); }
   margin: 0 0 16px;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 480px) {
+  .field-row { grid-template-columns: 1fr; }
 }
 
 .tagpick {

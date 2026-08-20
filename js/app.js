@@ -25,6 +25,9 @@
     tagdlgTags: $('tagdlg-tags'), tagdlgCustom: $('tagdlg-custom'),
     tagdlgSave: $('tagdlg-save'), tagdlgCancel: $('tagdlg-cancel'),
     tagdlgReset: $('tagdlg-reset'), tagdlgArtist: $('tagdlg-artist'),
+    tagdlgArtistName: $('tagdlg-artistname'), tagdlgAlbum: $('tagdlg-album'),
+    tagdlgFolder: $('tagdlg-folder'), tagdlgFolderRow: $('tagdlg-folderrow'),
+    tagdlgFolderLabel: $('tagdlg-folderlabel'),
     tagdlgArtistRow: $('tagdlg-artistrow'), tagdlgArtistLabel: $('tagdlg-artistlabel'),
     setdlg: $('setdlg'), setFolder: $('set-folder'), setKey: $('set-key'),
     setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
@@ -101,10 +104,18 @@
     // the filename is the artist; fall back if a track arrived on its own.
     var guess = track.nameGuess || Drive.parseFileName(track.fileName);
 
+    var detail = Store.getDetail(track) || {};
+    var folderRule = Store.getFolderRule(track.folder) || {};
+
     track.title = (meta && meta.title) || guess.title || track.fileName;
-    track.artist = (meta && (meta.artist || meta.albumArtist)) || guess.artist ||
+
+    // A correction the listener made outranks the file and the filename both:
+    // it is the only source here that knows what the library should look like.
+    track.artist = detail.artist || folderRule.artist ||
+      (meta && (meta.artist || meta.albumArtist)) || guess.artist ||
       rescueArtist(track, guess) || '';
-    track.album = (meta && meta.album) || '';
+
+    track.album = detail.album || folderRule.album || (meta && meta.album) || '';
     track.id3Genre = (meta && meta.genre) || '';
     track.tagged = !!meta;
 
@@ -179,7 +190,10 @@
 
   var enrichQueue = [];
   var enrichActive = 0;
-  var ENRICH_CONCURRENCY = 4;
+  var ENRICH_CONCURRENCY = 2;    // gentle: this runs over the whole library
+  var ENRICH_GAP_MS = 120;
+  var enrichFailures = 0;
+  var enrichStopped = false;
   var redrawTimer = null;
 
   function scheduleRedraw() {
@@ -193,6 +207,8 @@
 
   function enrichAll() {
     enrichQueue = tracks.filter(function (t) { return !t.tagged; });
+    enrichFailures = 0;
+    enrichStopped = false;
     if (!enrichQueue.length) return;
     for (var i = 0; i < ENRICH_CONCURRENCY; i++) enrichNext();
   }
@@ -211,8 +227,19 @@
         // Drive would not hand over the bytes. Leave the track untagged so
         // the next load tries again, rather than recording a verdict we did
         // not actually reach.
+        //
+        // If it keeps refusing, stop asking: reading tags is a nicety, and
+        // hammering a key that is already being throttled only makes the
+        // playback that matters worse.
+        enrichFailures++;
+        if (enrichFailures >= 8 && !enrichStopped) {
+          enrichStopped = true;
+          enrichQueue = [];
+        }
         return;
       }
+
+      enrichFailures = 0;
 
       var meta = result.buffer ? ID3.parse(result.buffer) : null;
       if (meta) {
@@ -236,7 +263,8 @@
       /* leave it on the filename guess */
     }).then(function () {
       enrichActive--;
-      enrichNext();
+      if (enrichStopped) return;
+      setTimeout(enrichNext, ENRICH_GAP_MS);
     });
   }
 
@@ -640,6 +668,19 @@
   function openTagDialog(track) {
     editing = track;
     els.tagdlgTitle.textContent = displayName(track);
+    els.tagdlgArtistName.value = track.artist || '';
+    els.tagdlgAlbum.value = track.album || '';
+
+    if (track.folder) {
+      els.tagdlgFolderLabel.textContent =
+        'Apply what you change to everything in "' + track.folder + '"';
+      els.tagdlgFolder.checked = !!Store.getFolderRule(track.folder);
+      els.tagdlgFolderRow.hidden = false;
+    } else {
+      els.tagdlgFolder.checked = false;
+      els.tagdlgFolderRow.hidden = true;
+    }
+
     els.tagdlgSub.textContent = (track.artist || 'Unknown artist') +
       (track.custom ? ' · edited by you' : ' · auto-tagged');
 
@@ -675,6 +716,9 @@
       els.tagdlgArtistRow.hidden = true;
     }
 
+    // Remember what the fields started as, so a folder-wide save can apply
+    // only what was deliberately changed.
+    els.tagdlg._opened = { artist: track.artist || '', album: track.album || '' };
     els.tagdlg._selected = selected;
     els.tagdlg.hidden = false;
   }
@@ -696,23 +740,57 @@
       if (t && selected.indexOf(t) === -1) selected.push(t);
     });
 
-    var byArtist = els.tagdlgArtist.checked && editing.artist;
-    var artist = editing.artist;
+    // Hold on to what is being edited: closeTagDialog() clears it, and the
+    // summary below still needs it.
+    var track = editing;
+    var byArtist = els.tagdlgArtist.checked && track.artist;
+    var byFolder = els.tagdlgFolder.checked && !!track.folder;
+    var artist = track.artist;
+
+    // Artist and album first: the genre rules below key off the artist, so it
+    // has to be settled before they are written.
+    var newArtist = els.tagdlgArtistName.value.trim();
+    var newAlbum = els.tagdlgAlbum.value.trim();
+
+    if (byFolder) {
+      // Only push fields that were actually edited. The artist box opens
+      // pre-filled, and applying it unchanged would rename every other artist
+      // in the folder to whichever track happened to be clicked.
+      var opened = els.tagdlg._opened || { artist: '', album: '' };
+      var rule = Store.getFolderRule(track.folder) || {};
+
+      if (newArtist !== opened.artist) rule.artist = newArtist;
+      if (newAlbum !== opened.album) rule.album = newAlbum;
+
+      Store.setFolderRule(track.folder, rule);
+      Store.setDetail(track, null);
+    } else {
+      if (track.folder && Store.getFolderRule(track.folder)) {
+        Store.setFolderRule(track.folder, null);
+      }
+      Store.setDetail(track, { artist: newArtist, album: newAlbum });
+    }
 
     if (byArtist) {
       // The rule carries the tags; a leftover track override would just mask
       // it for this one song.
       Store.setArtistRule(artist, selected);
-      Store.setOverride(editing, null);
+      Store.setOverride(track, null);
     } else {
-      Store.setOverride(editing, selected);
+      Store.setOverride(track, selected);
       if (Store.getArtistRule(artist)) Store.setArtistRule(artist, null);
     }
 
     closeTagDialog();
     retagAll();
 
-    if (byArtist) {
+    if (byFolder) {
+      var inFolder = tracks.filter(function (t) {
+        return t.folder === track.folder;
+      }).length;
+      toast('Applied to ' + inFolder + ' track' + (inFolder === 1 ? '' : 's') +
+        ' in "' + track.folder + '".');
+    } else if (byArtist) {
       var n = tracks.filter(function (t) {
         return Genres.normaliseArtist(t.artist) === Genres.normaliseArtist(artist);
       }).length;
@@ -723,7 +801,9 @@
   els.tagdlgReset.addEventListener('click', function () {
     if (!editing) return closeTagDialog();
     Store.setOverride(editing, null);
+    Store.setDetail(editing, null);
     if (editing.artist) Store.setArtistRule(editing.artist, null);
+    if (editing.folder) Store.setFolderRule(editing.folder, null);
     closeTagDialog();
     retagAll();
   });
@@ -1064,7 +1144,15 @@
       diagnosed = true;
 
       if (!result.ok) {
-        setStatus(result.message, true);
+        var dead = tracks.filter(function (t) { return t.dead; }).length;
+
+        if (result.network && dead > 2) {
+          setStatus(result.message + ' Every track has failed the same way, ' +
+            'which points at the key rather than any one file — check the ' +
+            'Drive API quota for its project.', true);
+        } else {
+          setStatus(result.message, true);
+        }
         return;
       }
 

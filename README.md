@@ -122,6 +122,17 @@ the built-in table knows it, or it shows up in several filenames). Mixed
 conventions in one folder come out right, and a lone unknown name is left
 alone rather than flipped on a guess.
 
+### Fixing artist, album and grouping
+
+The editor also carries **Artist** and **Album** boxes, and a checkbox to
+apply what you change to **everything in that Drive folder**. That is how a
+soundtrack of loose files, or an album whose tracks each claim to be their own
+record, gets pulled back together — name it once on any track in the folder.
+
+Only fields you actually edit are pushed folder-wide. The artist box opens
+pre-filled, and applying it untouched would rename every other artist in the
+folder to whichever track you happened to click.
+
 ### Fixing a tag
 
 Click any genre chip on a track to open the editor, toggle tags, and add your
@@ -257,7 +268,7 @@ it to the file it points at.
 
 ```
 node tests/units.js                      # 57 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 40 tests in a real browser
+npm i playwright && node tests/e2e.js    # 43 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

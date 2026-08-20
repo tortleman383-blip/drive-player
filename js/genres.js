@@ -108,6 +108,8 @@
     'massive attack':           ['Electronic', 'Ambient'],
     'portishead':               ['Electronic', 'Ambient'],
 
+    'michael jackson':          ['Pop', 'R&B', 'Funk'],
+    'good kid':                 ['Indie', 'Rock'],
     'kendrick lamar':           ['Hip-Hop'],
     'tyler the creator':        ['Hip-Hop', 'R&B'],
     'mf doom':                  ['Hip-Hop'],

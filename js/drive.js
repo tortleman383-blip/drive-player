@@ -204,8 +204,12 @@
   }
 
   /* Asks Drive for a single byte of a file. Cheap, and enough to tell a
-   * permission problem apart from a format the browser cannot decode. */
-  function probe(fileId, apiKey) {
+   * permission problem apart from a format the browser cannot decode.
+   *
+   * Retried once: a rejected fetch covers everything from a dropped
+   * connection to a throttled response arriving without CORS headers, and
+   * one blip should not be reported as a broken setup. */
+  function probe(fileId, apiKey, isRetry) {
     return fetch(streamUrl(fileId, apiKey), { headers: { Range: 'bytes=0-0' } })
       .then(function (res) {
         if (res.ok) return { ok: true, status: res.status };
@@ -214,12 +218,21 @@
         });
       })
       .catch(function (e) {
+        if (!isRetry) {
+          return new Promise(function (resolve) {
+            setTimeout(function () { resolve(probe(fileId, apiKey, true)); }, 1500);
+          });
+        }
+
         return {
           ok: false,
           status: 0,
+          network: true,
           message: 'The request never reached Drive (' + (e && e.message) + '). ' +
-            'Something between this page and googleapis.com is blocking it - a ' +
-            'network filter, an extension, or an offline connection.'
+            'Either something between this page and googleapis.com is blocking ' +
+            'it — an extension, a network filter, or no connection — or Drive is ' +
+            'throttling the key and answering without the headers a browser ' +
+            'needs to read the reply.'
         };
       });
   }
@@ -239,6 +252,8 @@
     // Bitrate and sample-rate stamps
     /\s*[\(\[]?\b\d{2,3}\s*kbps\b[\)\]]?/gi,
     /\s*[\(\[]\s*(?:flac|wav|m4a|mp3|24\s*bit|16\s*bit|\d{2,3}\s*k)\s*[\)\]]/gi,
+    // Syncthing: "Name.sync-conflict-20260802-180148-YDN3SFC"
+    /\s*\.?sync-conflict-\d{6,8}-\d{4,6}-[a-z0-9]+/gi,
     // Drive, Dropbox and OneDrive collision markers
     /\s*[\(\[][^\)\]]*\b(?:sync conflict|conflicted copy|case conflict|conflicted version)\b[^\)\]]*[\)\]]/gi,
     /\s*[-–—]\s*(?:sync conflict|copy)\b.*$/gi,
@@ -247,6 +262,11 @@
     // Trailing duplicate markers left by a second download: "Song (1)"
     /\s*\(\s*\d{1,2}\s*\)\s*$/g
   ];
+
+  /* Words that end a version label rather than name an act: the second half
+   * of "Borderline - Single Version" or "Paranoid - 2012 - Remaster" is part
+   * of the title, and reading it as an artist invents one. */
+  var QUALIFIER = /(?:^|\s)(?:version|edit|mix|remix|remaster(?:ed)?|master|cut|take|reprise|instrumental|acoustic|live|demo|mono|stereo|radio|extended|single|bonus|deluxe|interlude|intro|outro|skit|remake|rerecord(?:ed)?)\s*$/i;
 
   // Separators and punctuation stranded by the removals above.
   var STRANDED = /^[\s\-–—_.,·|]+|[\s\-–—_.,·|]+$/g;
@@ -266,13 +286,24 @@
       return part.trim();   // a stripped-out site name can leave a gap
     });
 
+    // Peel version labels off the end before deciding what is the artist.
+    var qualifiers = [];
+    while (parts.length > 1 && QUALIFIER.test(parts[parts.length - 1])) {
+      qualifiers.unshift(parts.pop().trim());
+    }
+
+    var suffix = qualifiers.length ? ' (' + qualifiers.join(' - ') + ')' : '';
+
     if (parts.length >= 2) {
       return {
         artist: parts[0].replace(STRANDED, '').trim(),
-        title: parts.slice(1).join(' - ').replace(STRANDED, '').trim()
+        title: parts.slice(1).join(' - ').replace(STRANDED, '').trim() + suffix
       };
     }
-    return { artist: '', title: (parts[0] || s).replace(STRANDED, '').trim() };
+    return {
+      artist: '',
+      title: (parts[0] || s).replace(STRANDED, '').trim() + suffix
+    };
   }
 
   /* Filenames arrive in both orders - "Weezer - Say It Ain't So" and

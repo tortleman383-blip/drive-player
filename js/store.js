@@ -17,7 +17,9 @@
     cache: 'drivePlayer.metaCache.v1',
     overrides: 'drivePlayer.genreOverrides.v1',
     artists: 'drivePlayer.artistRules.v1',
-    online: 'drivePlayer.onlineTags.v1'
+    online: 'drivePlayer.onlineTags.v1',
+    details: 'drivePlayer.trackDetails.v1',
+    folders: 'drivePlayer.folderRules.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -55,6 +57,8 @@
   var overrides = null;
   var artistRules = null;
   var onlineTags = null;
+  var details = null;
+  var folders = null;
 
   /* Only keys listed in DEFAULT_SETTINGS survive a round trip - anything
    * else is dropped on read, so a new setting has to be declared there. */
@@ -236,8 +240,70 @@
     try { localStorage.removeItem(KEYS.online); } catch (e) {}
   }
 
+  /* Artist and album the listener corrected by hand, per track. Keyed by
+   * file id alone: the artist/title key used for genres would be circular
+   * here, since these are the fields that decide it. */
+  function getDetails() {
+    if (!details) details = read(KEYS.details, {});
+    return details;
+  }
+
+  function getDetail(track) {
+    return getDetails()['id:' + track.id] || null;
+  }
+
+  function setDetail(track, detail) {
+    var all = getDetails();
+    var key = 'id:' + track.id;
+
+    if (detail && (detail.artist || detail.album)) all[key] = detail;
+    else delete all[key];
+
+    write(KEYS.details, all);
+  }
+
+  /* The same, applied to a whole Drive folder - which is how a soundtrack or
+   * an album that arrived as loose files gets pulled back together. */
+  function folderKey(folder) {
+    return String(folder || '').toLowerCase().trim();
+  }
+
+  function getFolderRules() {
+    if (!folders) folders = read(KEYS.folders, {});
+    return folders;
+  }
+
+  function getFolderRule(folder) {
+    var key = folderKey(folder);
+    if (!key) return null;
+    return getFolderRules()[key] || null;
+  }
+
+  function setFolderRule(folder, rule) {
+    var all = getFolderRules();
+    var key = folderKey(folder);
+    if (!key) return;
+
+    if (rule && (rule.artist || rule.album)) all[key] = rule;
+    else delete all[key];
+
+    write(KEYS.folders, all);
+  }
+
+  function replaceGrouping(map) {
+    if (map && map.tracks) { details = map.tracks; write(KEYS.details, details); }
+    if (map && map.folders) { folders = map.folders; write(KEYS.folders, folders); }
+  }
+
   global.Store = {
     getSettings: getSettings,
+    getDetail: getDetail,
+    setDetail: setDetail,
+    getDetails: getDetails,
+    getFolderRule: getFolderRule,
+    setFolderRule: setFolderRule,
+    getFolderRules: getFolderRules,
+    replaceGrouping: replaceGrouping,
     getOnline: getOnline,
     setOnline: setOnline,
     clearOnline: clearOnline,
