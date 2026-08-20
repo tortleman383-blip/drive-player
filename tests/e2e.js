@@ -48,8 +48,24 @@ FILES[ARTIST_FOLDER] = [
   { id: 'f9', name: 'Elephant.mp3', mimeType: 'audio/mpeg' }   // bare title
 ];
 
+// A real 16x16 PNG, so the thumbnail pipeline has something to decode.
+var COVER_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABlklEQVR42g3L0QBAIQxA0RCGEMIQhjCE' +
+  'EIYwhBBC2McFCCGEEEJ47/yf1hrS6A1tWMMboxGNbMzGalRjN07jNl6jNUGELqhgggtDCCGFKSyhhC0c' +
+  '4QpP/tCRTu9oxzreGZ3oZGd2Vqc6u3M6t/P6HxRRuqKKKa4MJZRUprKUUrZylKs8/YMhRjfUMMONYYSR' +
+  'xjSWUcY2jnGNZ39wxOmOOua4M5xw0pnOcsrZznGu8/wPAxn0gQ5s4IMxiEEO5mANarAHZ3AHb/whkKAH' +
+  'GljgwQgiyGAGK6hgBye4wYs/JJL0RBNLPBlJJJnMZCWV7OQkN3n5h4lM+kQnNvHJmMQkJ3OyJjXZkzO5' +
+  'kzf/sJBFX+jCFr4Yi1jkYi7WohZ7cRZ38dYfCil6oYUVXowiiixmsYoqdnGKW7z6w0Y2faMb2/hmbGKT' +
+  'm7lZm9rszdnczdt/OMihH/RgBz+MQxzyMA/rUId9OId7eOcPF7n0i17s4pdxiUte5mVd6rIv53Iv7/7h' +
+  'IY/+0Ic9/DEe8cjHfKxHPfbjPO7jPT74o6QQb2NdBgAAAABJRU5ErkJggg==', 'base64');
+
 // Only f5 carries a tag; everything else has to be read off its filename.
-var ID3_FILES = { f5: { artist: 'Perturbator', title: 'Sentient', album: 'Dangerous Days' } };
+var ID3_FILES = {
+  f5: {
+    artist: 'Perturbator', title: 'Sentient', album: 'Dangerous Days',
+    picture: COVER_PNG
+  }
+};
 
 function syncsafe(n) {
   return Buffer.from([(n >> 21) & 0x7f, (n >> 14) & 0x7f, (n >> 7) & 0x7f, n & 0x7f]);
@@ -63,11 +79,26 @@ function textFrame(id, text) {
   return Buffer.concat([head, body]);
 }
 
+function apicFrame(mime, data) {
+  var body = Buffer.concat([
+    Buffer.from([0]),                        // ISO-8859-1
+    Buffer.from(mime, 'latin1'), Buffer.from([0]),
+    Buffer.from([3]),                        // front cover
+    Buffer.from('cover', 'latin1'), Buffer.from([0]),
+    data
+  ]);
+  var head = Buffer.alloc(10);
+  head.write('APIC', 0, 'latin1');
+  head.writeUInt32BE(body.length, 4);
+  return Buffer.concat([head, body]);
+}
+
 function id3Buffer(meta) {
   var frames = Buffer.concat([
     textFrame('TIT2', meta.title),
     textFrame('TPE1', meta.artist),
-    textFrame('TALB', meta.album)
+    textFrame('TALB', meta.album),
+    meta.picture ? apicFrame('image/png', meta.picture) : Buffer.alloc(0)
   ]);
   var body = Buffer.concat([frames, Buffer.alloc(128)]);
   return Buffer.concat([
@@ -883,6 +914,56 @@ async function main() {
       }, null, { timeout: 15000 });
 
       assert.strictEqual(asked, 0, 'MusicBrainz was queried again after caching');
+    });
+
+  await step('a cover embedded in a tag shows in the list and now playing',
+    async function () {
+      // The tag pass already downloads these bytes; artwork must not cost a
+      // request of its own, so nothing new is fetched here.
+      await page.waitForFunction(function () {
+        var rows = document.querySelectorAll('.track');
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector('.track-artist').textContent !== 'Perturbator') continue;
+          var img = rows[i].querySelector('.art');
+          return !!(img && img.src && img.src.indexOf('blob:') === 0);
+        }
+        return false;
+      }, null, { timeout: 20000 });
+
+      // A track with no cover must show a blank slot, not a broken image.
+      var blank = await page.evaluate(function () {
+        var rows = document.querySelectorAll('.track');
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector('.track-artist').textContent !== 'Unknown artist') continue;
+          var img = rows[i].querySelector('.art');
+          return { src: img.getAttribute('src') || '', complete: img.complete };
+        }
+        return null;
+      });
+      assert.ok(blank && blank.src.indexOf('data:image/gif') === 0,
+        'a coverless row should hold a blank placeholder: ' + JSON.stringify(blank));
+      assert.ok(blank.complete, 'the placeholder failed to load');
+
+      var size = await page.evaluate(function () {
+        var rows = document.querySelectorAll('.track');
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].querySelector('.track-artist').textContent !== 'Perturbator') continue;
+          var img = rows[i].querySelector('.art');
+          return { w: img.naturalWidth, h: img.naturalHeight };
+        }
+        return null;
+      });
+
+      assert.ok(size && size.w > 0, 'the thumbnail did not decode: ' + JSON.stringify(size));
+      assert.ok(size.w <= 128 && size.h <= 128,
+        'thumbnails should be shrunk, got ' + JSON.stringify(size));
+
+      // And the same stored thumbnail feeds the now playing corner.
+      await page.click('.track:has(.track-artist:text-is("Perturbator"))');
+      await page.waitForFunction(function () {
+        var img = document.getElementById('np-img');
+        return !img.hidden && img.src.indexOf('blob:') === 0;
+      }, null, { timeout: 15000 });
     });
 
   await step('the genre bar is a bar and the list gets the room', async function () {

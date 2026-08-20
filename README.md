@@ -11,6 +11,7 @@ music/
   js/genres.js        taxonomy, artist table, tag inference
   js/musicbrainz.js   rate-limited genre lookup
   js/id3.js           ID3v2 reader (v2.2 / v2.3 / v2.4)
+  js/artwork.js       cover thumbnails, cached in IndexedDB
   js/drive.js         Drive API client, filename parsing
   js/store.js         localStorage: settings, metadata cache, genre edits
   js/player.js        queue, shuffle order, repeat, transport
@@ -236,8 +237,13 @@ Lock-screen and headset buttons work too, via the Media Session API.
   once is a burst of hundreds of requests to googleapis — enough for Google to
   decide the network is sending automated queries and block it outright, which
   takes playback down too. Tags are a nicety; playback is not.
-- **Artwork** is fetched for the playing track only, with a 20-item cache, so
-  a big library does not accumulate decoded images.
+- **Artwork** costs no requests of its own. The tag pass already downloads the
+  first 256 KB of a file, and an embedded cover is usually sitting in it, so
+  the picture is taken from bytes already in hand, shrunk to 128px, and kept
+  in IndexedDB — a few KB each rather than a few hundred. Covers appear in the
+  list, on the browse cards and in the now playing corner as the tag pass
+  reaches each file. A cover per track fetched on demand would be a request
+  per track, which is the pattern that gets a network blocked.
 - **A file that will not play** is marked in the list and skipped rather than
   ending the session. If nothing at all plays — a revoked key, a folder that
   stopped being shared — it stops after five failures and says so instead of
@@ -273,7 +279,7 @@ it to the file it points at.
 
 ```
 node tests/units.js                      # 57 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 43 tests in a real browser
+npm i playwright && node tests/e2e.js    # 44 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

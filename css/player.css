@@ -397,7 +397,7 @@ a { color: var(--accent); }
 
 .track {
   display: grid;
-  grid-template-columns: 28px 1fr auto auto;
+  grid-template-columns: 28px 34px 1fr auto auto;
   align-items: center;
   gap: 12px;
   padding: 9px 12px;
@@ -411,6 +411,25 @@ a { color: var(--accent); }
 .track.playing .track-title { color: var(--accent); }
 
 .track.dead .track-title { color: var(--danger); }
+
+.art {
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  background: #0f1117;
+  object-fit: cover;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.card-art {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 7px;
+  background: #0f1117;
+  object-fit: cover;
+  margin-bottom: 8px;
+}
 
 .track-num {
   color: var(--text-faint);
@@ -722,7 +741,7 @@ a { color: var(--accent); }
   .np-volume { display: none; }
 
   .brand span { display: none; }
-  .track { grid-template-columns: 1fr auto; gap: 8px; }
+  .track { grid-template-columns: 34px 1fr auto; gap: 8px; }
   .track-num, .track-dur { display: none; }
   .track-tags { justify-content: flex-end; }
 }

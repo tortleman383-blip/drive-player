@@ -4,6 +4,11 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
+  // A src-less <img> draws a broken-image box; this keeps the slot blank
+  // until a real cover arrives.
+  var BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAAB' +
+    'AAEAAAIBRAA7';
+
   var els = {
     setup: $('setup'), setupFolder: $('setup-folder'), setupKey: $('setup-key'),
     setupGo: $('setup-go'), setupError: $('setup-error'),
@@ -289,6 +294,13 @@
           }
         });
         track.cachedArt = !!meta.picture;
+
+        if (meta.picture) {
+          Artwork.put(track.id, track.modifiedTime, meta.picture).then(function (url) {
+            if (url) scheduleRedraw();
+          });
+        }
+
         scheduleRedraw();
       } else {
         // Genuinely no tag in the file: remember, so a reload does not retry.
@@ -308,9 +320,6 @@
    * Pulled on demand for the track being played, with a small cache, so a
    * big library does not sit on a pile of decoded images. */
 
-  var artCache = {};
-  var artOrder = [];
-
   function showArtwork(url) {
     if (url) {
       els.npImg.src = url;
@@ -321,39 +330,20 @@
     }
   }
 
+  /* Uses the thumbnail the tag pass stored. Deliberately no fetch of its
+   * own: a cover per play is a request per play, and the tag pass will get
+   * to this track anyway. */
   function loadArtwork(track) {
-    if (artCache[track.id]) {
-      track.artworkUrl = artCache[track.id];
-      showArtwork(track.artworkUrl);
-      player.updateMediaSession(track);
-      return;
-    }
-
     showArtwork(null);
-    if (track.cachedArt === false && track.tagged) return;
 
-    Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
-      var meta = result.ok && result.buffer ? ID3.parse(result.buffer) : null;
-      if (!meta || !meta.picture) return;
-
-      var blob = new Blob([meta.picture.data], { type: meta.picture.mime });
-      var url = URL.createObjectURL(blob);
-
-      artCache[track.id] = url;
-      artOrder.push(track.id);
-      while (artOrder.length > 20) {
-        var old = artOrder.shift();
-        URL.revokeObjectURL(artCache[old]);
-        delete artCache[old];
-      }
-
+    Artwork.get(track.id, track.modifiedTime).then(function (url) {
       var np = player.nowPlaying();
-      if (np && np.id === track.id) {
-        track.artworkUrl = url;
-        showArtwork(url);
-        player.updateMediaSession(track);
-      }
-    }).catch(function () {});
+      if (!url || !np || np.id !== track.id) return;
+
+      track.artworkUrl = url;
+      showArtwork(url);
+      player.updateMediaSession(track);
+    });
   }
 
   /* ---------- filtering ---------- */
@@ -406,9 +396,12 @@
           label: type === 'artist' ? (t.artist || 'Unknown artist')
                                    : (t.album || 'No album'),
           sub: type === 'album' ? (t.artist || '') : '',
-          count: 0
+          count: 0,
+          ids: []      // candidates to take a cover from
         };
       }
+
+      if (groups[key].ids.length < 6) groups[key].ids.push(t.id);
 
       groups[key].count++;
       // One album can credit several artists; say so rather than picking one.
@@ -443,6 +436,27 @@
       var card = document.createElement('button');
       card.type = 'button';
       card.className = 'card';
+
+      // Any cover already stored for a track in this group will do; the first
+      // few are tried in turn rather than fetching anything new.
+      var art = document.createElement('img');
+      art.className = 'card-art';
+      art.alt = '';
+      art.loading = 'lazy';
+      art.src = BLANK_PX;
+      card.appendChild(art);
+
+      (function (ids) {
+        var at = 0;
+        (function next() {
+          if (at >= ids.length) return;
+          var id = ids[at++];
+          Artwork.get(id).then(function (url) {
+            if (url) art.src = url;
+            else next();
+          });
+        })();
+      })(entry.ids);
 
       var name = document.createElement('span');
       name.className = 'card-name';
@@ -567,6 +581,15 @@
       num.className = 'track-num';
       num.textContent = i + 1;
 
+      var art = document.createElement('img');
+      art.className = 'art';
+      art.alt = '';
+      art.loading = 'lazy';
+      art.src = BLANK_PX;
+      Artwork.get(track.id, track.modifiedTime).then(function (url) {
+        if (url) art.src = url;
+      });
+
       var main = document.createElement('div');
       main.className = 'track-main';
 
@@ -611,6 +634,7 @@
       li.dataset.trackId = track.id;
 
       li.appendChild(num);
+      li.appendChild(art);
       li.appendChild(main);
       li.appendChild(tags);
       li.appendChild(dur);
@@ -874,6 +898,7 @@
 
   els.setClearCache.addEventListener('click', function () {
     Store.clearCache();
+    Artwork.clear();
     toast('Metadata cache cleared. Reloading…');
     loadLibrary().catch(function () {});
   });
