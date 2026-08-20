@@ -14,6 +14,7 @@
     this.order = [];
     this.pos = -1;
     this.playing = null;   // what is actually loaded, even if filtered out
+    this.upNext = [];      // tracks queued by hand, played before the order
     this.errorStreak = 0;
     this.shuffle = false;
     this.repeat = 'all';
@@ -68,6 +69,40 @@
 
   Player.prototype.nowPlaying = function () {
     return this.playing;
+  };
+
+  /* Tracks queued by hand jump the order without disturbing it: whatever was
+   * playing keeps its place, so once the queue drains the album carries on
+   * from where it was. */
+  Player.prototype.enqueue = function (track, playNext) {
+    if (!track) return;
+    if (playNext) this.upNext.unshift(track);
+    else this.upNext.push(track);
+    this.emit('queue');
+  };
+
+  Player.prototype.unqueue = function (at) {
+    if (at < 0 || at >= this.upNext.length) return;
+    this.upNext.splice(at, 1);
+    this.emit('queue');
+  };
+
+  Player.prototype.clearUpNext = function () {
+    this.upNext = [];
+    this.emit('queue');
+  };
+
+  /* What is coming, queued items first, then the rest of the play order. */
+  Player.prototype.upcoming = function (limit) {
+    var out = this.upNext.map(function (track) {
+      return { track: track, queued: true };
+    });
+
+    for (var i = this.pos + 1; i < this.order.length && out.length < (limit || 30); i++) {
+      out.push({ track: this.queue[this.order[i]], queued: false });
+    }
+
+    return out;
   };
 
   function shuffled(n, first) {
@@ -139,7 +174,12 @@
   };
 
   Player.prototype.load = function (autoplay) {
-    var track = this.current();
+    this.playTrack(this.current(), autoplay);
+  };
+
+  /* Loads a specific track without moving the position in the play order.
+   * That separation is what lets a queued track play "in between". */
+  Player.prototype.playTrack = function (track, autoplay) {
     if (!track) return;
 
     this.playing = track;
@@ -168,6 +208,14 @@
   };
 
   Player.prototype.next = function (fromError) {
+    // Anything queued by hand comes first.
+    if (this.upNext.length) {
+      var queued = this.upNext.shift();
+      this.emit('queue');
+      this.playTrack(queued, true);
+      return;
+    }
+
     if (!this.order.length) return;
 
     if (this.pos + 1 < this.order.length) {

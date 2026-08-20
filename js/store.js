@@ -19,7 +19,8 @@
     artists: 'drivePlayer.artistRules.v1',
     online: 'drivePlayer.onlineTags.v1',
     details: 'drivePlayer.trackDetails.v1',
-    folders: 'drivePlayer.folderRules.v1'
+    folders: 'drivePlayer.folderRules.v1',
+    queue: 'drivePlayer.queue.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -295,8 +296,21 @@
     if (map && map.folders) { folders = map.folders; write(KEYS.folders, folders); }
   }
 
+  /* The hand-queued list, as file ids. Kept so a reload does not throw away
+   * a queue someone deliberately built. */
+  function saveQueue(ids) {
+    write(KEYS.queue, ids || []);
+  }
+
+  function loadQueue() {
+    var ids = read(KEYS.queue, []);
+    return Array.isArray(ids) ? ids : [];
+  }
+
   global.Store = {
     getSettings: getSettings,
+    saveQueue: saveQueue,
+    loadQueue: loadQueue,
     getDetail: getDetail,
     setDetail: setDetail,
     getDetails: getDetails,

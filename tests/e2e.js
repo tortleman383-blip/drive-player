@@ -715,6 +715,118 @@ async function main() {
       await ctx3.close();
     });
 
+  /* ---- the queue ---- */
+
+  await step('a track can be queued without playing it', async function () {
+    await page.click('.tab[data-facet="genre"]');
+    await page.click('#genres .chip >> text=/^All/');
+    await page.waitForSelector('#tracklist:not([hidden])');
+
+    var before = await page.textContent('#np-title');
+
+    await page.click('#tracklist .track:nth-child(3) .track-add');
+
+    await page.waitForFunction(function () {
+      return !document.getElementById('queue-badge').hidden;
+    });
+    assert.strictEqual(await page.textContent('#queue-badge'), '1');
+
+    // Queueing must not hijack what is playing.
+    assert.strictEqual(await page.textContent('#np-title'), before,
+      'adding to the queue changed the current track');
+  });
+
+  await step('a queued track plays next, then the order resumes where it was',
+    async function () {
+      var state = await page.evaluate(function () {
+        var p = window.DrivePlayer.player;
+
+        // An earlier test pointed queue[0] at a dead URL to prove a bad file
+        // is skipped. Put it back, or its error auto-advances and eats the
+        // queued track before this test can click anything.
+        p.queue.forEach(function (t) {
+          if (t.url.indexOf('googleapis.com') === -1) {
+            t.url = 'https://www.googleapis.com/drive/v3/files/' + t.id +
+              '?alt=media&key=AIzaTESTKEY';
+            t.dead = false;
+          }
+        });
+
+        p.setShuffle(false);
+        p.clearUpNext();
+        p.playIndex(1);
+        var queued = p.queue[3];
+        p.enqueue(queued, false);
+        return { pos: p.pos, queued: queued.id, next: p.queue[2].id };
+      });
+
+      // Skipping should take the queued track, not the next one in the list.
+      await page.click('#btn-next');
+      var playing = await page.evaluate(function () {
+        return window.DrivePlayer.player.nowPlaying().id;
+      });
+      assert.strictEqual(playing, state.queued, 'the queued track did not play next');
+
+      var pos = await page.evaluate(function () { return window.DrivePlayer.player.pos; });
+      assert.strictEqual(pos, state.pos,
+        'playing a queued track moved the position in the order');
+
+      // With the queue drained, the list carries on from where it was.
+      await page.click('#btn-next');
+      var after = await page.evaluate(function () {
+        return window.DrivePlayer.player.nowPlaying().id;
+      });
+      assert.strictEqual(after, state.next,
+        'the order did not resume where it left off');
+    });
+
+  await step('the queue panel lists and removes queued tracks', async function () {
+    await page.evaluate(function () {
+      var p = window.DrivePlayer.player;
+      p.clearUpNext();
+      p.enqueue(p.queue[4], false);
+      p.enqueue(p.queue[5], false);
+    });
+
+    await page.click('#btn-queue');
+    await page.waitForSelector('#queuedlg:not([hidden])');
+
+    var queued = await page.$$eval('.queuerow:not(.later)', function (els) { return els.length; });
+    assert.strictEqual(queued, 2, 'expected 2 hand-queued rows, got ' + queued);
+
+    await page.click('.queuerow:not(.later) .icon-btn');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('.queuerow:not(.later)').length === 1;
+    });
+    assert.strictEqual(await page.textContent('#queue-badge'), '1');
+
+    await page.click('#queue-clear');
+    await page.waitForFunction(function () {
+      return document.getElementById('queue-badge').hidden;
+    });
+    await page.click('#queue-close');
+  });
+
+  await step('a queue survives a reload', async function () {
+    await page.evaluate(function () {
+      var p = window.DrivePlayer.player;
+      p.clearUpNext();
+      p.enqueue(p.queue[6], false);
+    });
+
+    await page.reload();
+    await page.waitForSelector('#app:not([hidden])');
+    await page.waitForFunction(function () {
+      return window.DrivePlayer && window.DrivePlayer.tracks().length === 10;
+    });
+
+    await page.waitForFunction(function () {
+      return window.DrivePlayer.player.upNext.length === 1;
+    }, null, { timeout: 10000 });
+
+    await page.evaluate(function () { window.DrivePlayer.player.clearUpNext(); });
+  });
+
   /* ---- tagging a whole artist at once ---- */
 
   await step('tagging by artist covers every track by them', async function () {

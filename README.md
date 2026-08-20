@@ -63,6 +63,17 @@ otherwise. Do not add an HTTP-referrer restriction if you open the page as a
 Nothing is uploaded, and no audio is copied: tracks stream from Drive as they
 play.
 
+## The queue
+
+The **+** on any row queues a track. Queued tracks play before the rest of the
+list, and — importantly — without moving your place in it: once the queue
+drains, the album or filter you were listening to carries on from exactly
+where it was.
+
+The queue button in the transport (or **Q**) opens *Up next*, which shows what
+you queued by hand followed by what the list plays after that, and lets you
+drop individual tracks or clear the lot. A queue you built survives a reload.
+
 ## Browsing
 
 Three tabs above the list:
@@ -218,6 +229,7 @@ front, so `The Black Angels` and `Black Angels, The` both match
 | `S` | shuffle |
 | `L` | repeat: all → one → off |
 | `M` | mute |
+| `Q` | up next |
 | `/` | search |
 | `Esc` | close a dialog, or leave the search box |
 
@@ -279,7 +291,7 @@ it to the file it points at.
 
 ```
 node tests/units.js                      # 57 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 44 tests in a real browser
+npm i playwright && node tests/e2e.js    # 48 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

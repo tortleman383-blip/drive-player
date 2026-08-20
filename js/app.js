@@ -38,7 +38,10 @@
     setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
     setImport: $('set-import'), setFile: $('set-file'), setClearCache: $('set-clearcache'),
     setUntagged: $('set-untagged'), setLookup: $('set-lookup'),
-    toast: $('toast'), audio: $('audio')
+    toast: $('toast'), audio: $('audio'),
+    queueBtn: $('btn-queue'), queueBadge: $('queue-badge'),
+    queueDlg: $('queuedlg'), queueList: $('queue-list'), queueSub: $('queue-sub'),
+    queueClear: $('queue-clear'), queueClose: $('queue-close')
   };
 
   var settings = Store.getSettings();
@@ -177,6 +180,7 @@
         setStatus('');
       }
 
+      restoreQueue();
       renderGenres();
       renderView();
       enrichVisible();
@@ -186,6 +190,19 @@
       setStatus(err.message || String(err), true);
       throw err;
     });
+  }
+
+  /* Puts back the hand-built queue from before a reload, skipping anything
+   * that has since left the folder. */
+  function restoreQueue() {
+    var byId = {};
+    tracks.forEach(function (t) { byId[t.id] = t; });
+
+    player.upNext = Store.loadQueue()
+      .map(function (id) { return byId[id]; })
+      .filter(Boolean);
+
+    renderQueueBadge();
   }
 
   /* ---------- metadata enrichment ----------
@@ -628,6 +645,18 @@
         tags.appendChild(more);
       }
 
+      var add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'track-add';
+      add.title = 'Add to queue';
+      add.setAttribute('aria-label', 'Add "' + displayName(track) + '" to the queue');
+      add.innerHTML = '<svg class="icon"><use href="#i-plus"></use></svg>';
+      add.addEventListener('click', function (e) {
+        e.stopPropagation();          // adding is not playing
+        player.enqueue(track, false);
+        toast('Queued "' + displayName(track) + '".');
+      });
+
       var dur = document.createElement('div');
       dur.className = 'track-dur';
       dur.textContent = track.duration ? fmtTime(track.duration) : '';
@@ -637,6 +666,7 @@
       li.appendChild(art);
       li.appendChild(main);
       li.appendChild(tags);
+      li.appendChild(add);
       li.appendChild(dur);
 
       li.addEventListener('click', function () { player.playIndex(i); });
@@ -656,6 +686,89 @@
       rows[i].classList.toggle('playing', !!isIt);
     }
   }
+
+  /* ---------- the queue ---------- */
+
+  function renderQueueBadge() {
+    var n = player.upNext.length;
+    els.queueBadge.textContent = n > 99 ? '99+' : n;
+    els.queueBadge.hidden = n === 0;
+    els.queueBtn.classList.toggle('on', n > 0);
+    Store.saveQueue(player.upNext.map(function (t) { return t.id; }));
+  }
+
+  function renderQueueDialog() {
+    if (els.queueDlg.hidden) return;
+
+    var upcoming = player.upcoming(40);
+    var queued = player.upNext.length;
+
+    els.queueSub.textContent = queued
+      ? queued + (queued === 1 ? ' track queued by hand, then the rest of the list'
+                               : ' tracks queued by hand, then the rest of the list')
+      : 'Nothing queued by hand — this is just what comes next.';
+
+    els.queueList.textContent = '';
+
+    upcoming.forEach(function (item, i) {
+      var li = document.createElement('li');
+      li.className = 'queuerow' + (item.queued ? '' : ' later');
+
+      var main = document.createElement('div');
+      main.className = 'queuerow-main';
+
+      var title = document.createElement('div');
+      title.className = 'queuerow-title';
+      title.textContent = displayName(item.track);
+
+      var artist = document.createElement('div');
+      artist.className = 'queuerow-artist';
+      artist.textContent = item.track.artist || 'Unknown artist';
+
+      main.appendChild(title);
+      main.appendChild(artist);
+      li.appendChild(main);
+
+      if (item.queued) {
+        var drop = document.createElement('button');
+        drop.type = 'button';
+        drop.className = 'icon-btn';
+        drop.title = 'Remove from queue';
+        drop.innerHTML = '<svg class="icon"><use href="#i-x"></use></svg>';
+        drop.addEventListener('click', function () {
+          player.unqueue(i);
+        });
+        li.appendChild(drop);
+      }
+
+      els.queueList.appendChild(li);
+    });
+
+    if (!upcoming.length) {
+      var none = document.createElement('li');
+      none.className = 'queuerow later';
+      none.textContent = 'Nothing coming up.';
+      els.queueList.appendChild(none);
+    }
+  }
+
+  els.queueBtn.addEventListener('click', function () {
+    els.queueDlg.hidden = !els.queueDlg.hidden;
+    renderQueueDialog();
+  });
+
+  els.queueClose.addEventListener('click', function () { els.queueDlg.hidden = true; });
+
+  els.queueClear.addEventListener('click', function () {
+    player.clearUpNext();
+    renderQueueDialog();
+  });
+
+  player.on('queue', function () {
+    renderQueueBadge();
+    renderQueueDialog();
+    highlightPlaying();
+  });
 
   /* ---------- transport UI ---------- */
 
@@ -1155,7 +1268,8 @@
     var typing = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
 
     if (e.key === 'Escape') {
-      if (!els.tagdlg.hidden) closeTagDialog();
+      if (!els.queueDlg.hidden) els.queueDlg.hidden = true;
+      else if (!els.tagdlg.hidden) closeTagDialog();
       else if (!els.setdlg.hidden) els.setdlg.hidden = true;
       else if (typing) e.target.blur();
       return;
@@ -1173,6 +1287,7 @@
       case 's': case 'S': els.shuffle.click(); break;
       case 'l': case 'L': els.repeat.click(); break;
       case 'm': case 'M': els.mute.click(); break;
+      case 'q': case 'Q': els.queueBtn.click(); break;
       case 'n': case 'N': player.next(); break;
       case 'p': case 'P': player.prev(); break;
     }
@@ -1189,7 +1304,6 @@
 
   player.on('state', renderState);
   player.on('time', renderTime);
-  player.on('queue', highlightPlaying);
 
   /* The <audio> element only ever reports "something went wrong". Ask Drive
    * directly what happened, once, and put the real answer on screen. */
