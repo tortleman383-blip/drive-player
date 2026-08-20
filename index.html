@@ -81,6 +81,7 @@
     <button class="tab on" data-facet="genre" role="tab">Genres</button>
     <button class="tab" data-facet="artist" role="tab">Artists</button>
     <button class="tab" data-facet="album" role="tab">Albums</button>
+    <button class="tab" data-facet="playlist" role="tab">Playlists</button>
   </nav>
 
   <nav id="genres" class="genrebar" aria-label="Filter by genre"></nav>
@@ -92,6 +93,7 @@
       <button id="crumb-back" class="ghost small">← Back</button>
       <span id="crumb-label"></span>
       <span id="crumb-count" class="crumb-count"></span>
+      <button id="crumb-delete" class="ghost small" hidden>Delete playlist</button>
     </div>
 
     <div id="browse" class="browse" hidden></div>
@@ -220,6 +222,31 @@
     <div class="dialog-actions">
       <button id="set-cancel" class="ghost">Cancel</button>
       <button id="set-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="adddlg" class="dialog" hidden>
+  <div class="dialog-card">
+    <h2 id="add-title">Add to…</h2>
+    <p class="dialog-sub" id="add-sub"></p>
+
+    <div class="stack">
+      <button id="add-playnext" class="ghost wide">Play next</button>
+      <button id="add-queue" class="ghost wide">Add to queue</button>
+    </div>
+
+    <p class="dialog-sub section">Playlists</p>
+    <div id="add-playlists" class="stack"></div>
+
+    <label class="field">
+      <span>New playlist</span>
+      <input id="add-newname" type="text" spellcheck="false" placeholder="Late night">
+    </label>
+
+    <div class="dialog-actions">
+      <button id="add-create" class="ghost">Create and add</button>
+      <button id="add-close" class="primary">Done</button>
     </div>
   </div>
 </div>

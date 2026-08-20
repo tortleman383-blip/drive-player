@@ -20,7 +20,8 @@
     online: 'drivePlayer.onlineTags.v1',
     details: 'drivePlayer.trackDetails.v1',
     folders: 'drivePlayer.folderRules.v1',
-    queue: 'drivePlayer.queue.v1'
+    queue: 'drivePlayer.queue.v1',
+    playlists: 'drivePlayer.playlists.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -307,10 +308,75 @@
     return Array.isArray(ids) ? ids : [];
   }
 
+  /* Playlists are ordered lists of file ids under a generated key, so a
+   * playlist can be renamed without rewriting what is in it. */
+  var playlists = null;
+
+  function getPlaylists() {
+    if (!playlists) playlists = read(KEYS.playlists, {});
+    return playlists;
+  }
+
+  function savePlaylists() {
+    write(KEYS.playlists, getPlaylists());
+  }
+
+  function createPlaylist(name) {
+    var all = getPlaylists();
+    var key = 'pl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    all[key] = { name: String(name || 'Untitled').trim() || 'Untitled', ids: [] };
+    savePlaylists();
+    return key;
+  }
+
+  function renamePlaylist(key, name) {
+    var all = getPlaylists();
+    if (!all[key]) return;
+    all[key].name = String(name || '').trim() || all[key].name;
+    savePlaylists();
+  }
+
+  function deletePlaylist(key) {
+    var all = getPlaylists();
+    delete all[key];
+    savePlaylists();
+  }
+
+  /* Adding is idempotent: a track already in the list stays where it is
+   * rather than jumping to the end. */
+  function addToPlaylist(key, id) {
+    var all = getPlaylists();
+    if (!all[key] || all[key].ids.indexOf(id) !== -1) return false;
+    all[key].ids.push(id);
+    savePlaylists();
+    return true;
+  }
+
+  function removeFromPlaylist(key, id) {
+    var all = getPlaylists();
+    if (!all[key]) return;
+    var at = all[key].ids.indexOf(id);
+    if (at === -1) return;
+    all[key].ids.splice(at, 1);
+    savePlaylists();
+  }
+
+  function replacePlaylists(map) {
+    playlists = map || {};
+    savePlaylists();
+  }
+
   global.Store = {
     getSettings: getSettings,
     saveQueue: saveQueue,
     loadQueue: loadQueue,
+    getPlaylists: getPlaylists,
+    createPlaylist: createPlaylist,
+    renamePlaylist: renamePlaylist,
+    deletePlaylist: deletePlaylist,
+    addToPlaylist: addToPlaylist,
+    removeFromPlaylist: removeFromPlaylist,
+    replacePlaylists: replacePlaylists,
     getDetail: getDetail,
     setDetail: setDetail,
     getDetails: getDetails,

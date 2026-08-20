@@ -499,6 +499,36 @@ a { color: var(--accent); }
   .track-add { opacity: 0.65; }
 }
 
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.ghost.wide {
+  width: 100%;
+  text-align: left;
+}
+
+.dialog-sub.section {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+
+.pl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pl-row .count { color: var(--text-faint); font-size: 12px; }
+.pl-row.in { border-color: var(--accent); color: var(--accent); }
+
 .queuelist {
   list-style: none;
   margin: 0 0 12px;

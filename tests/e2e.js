@@ -725,6 +725,9 @@ async function main() {
     var before = await page.textContent('#np-title');
 
     await page.click('#tracklist .track:nth-child(3) .track-add');
+    await page.waitForSelector('#adddlg:not([hidden])');
+    await page.click('#add-queue');
+    await page.waitForFunction(function () { return document.getElementById('adddlg').hidden; });
 
     await page.waitForFunction(function () {
       return !document.getElementById('queue-badge').hidden;
@@ -825,6 +828,101 @@ async function main() {
     }, null, { timeout: 10000 });
 
     await page.evaluate(function () { window.DrivePlayer.player.clearUpNext(); });
+  });
+
+  /* ---- playlists ---- */
+
+  await step('a playlist can be started from a track', async function () {
+    await page.evaluate(function () { window.DrivePlayer.player.clearUpNext(); });
+    await page.click('.tab[data-facet="genre"]');
+    await page.waitForSelector('#tracklist:not([hidden])');
+
+    await page.click('#tracklist .track:nth-child(2) .track-add');
+    await page.waitForSelector('#adddlg:not([hidden])');
+
+    await page.fill('#add-newname', 'Late Night');
+    await page.click('#add-create');
+
+    // The row flips to "Remove", which is how you can tell it went in.
+    await page.waitForFunction(function () {
+      return document.querySelector('#add-playlists .pl-row.in') !== null;
+    });
+
+    await page.click('#add-close');
+  });
+
+  await step('the Playlists tab shows it and plays it in the order built',
+    async function () {
+      // Add a second track, so order is observable.
+      await page.click('#tracklist .track:nth-child(5) .track-add');
+      await page.waitForSelector('#adddlg:not([hidden])');
+      await page.click('#add-playlists .pl-row');
+      await page.click('#add-close');
+
+      await page.click('.tab[data-facet="playlist"]');
+      await page.waitForSelector('#browse:not([hidden])');
+
+      var card = await page.$$eval('.card', function (cards) {
+        return cards.map(function (c) {
+          return {
+            name: c.querySelector('.card-name').textContent,
+            count: c.querySelector('.card-count').textContent
+          };
+        });
+      });
+      assert.strictEqual(card.length, 1, 'expected one playlist: ' + JSON.stringify(card));
+      assert.strictEqual(card[0].name, 'Late Night');
+      assert.strictEqual(card[0].count, '2 tracks');
+
+      await page.click('.card:has(.card-name:text-is("Late Night"))');
+      await page.waitForSelector('#crumb:not([hidden])');
+
+      var titles = await page.$$eval('.track-title', function (els) {
+        return els.map(function (e) { return e.textContent; });
+      });
+      assert.strictEqual(titles.length, 2, 'playlist should hold 2 tracks: ' + titles);
+
+      // Built second-then-fifth, so that is the order it plays in, not the
+      // library's.
+      var order = await page.evaluate(function () {
+        return window.DrivePlayer.player.queue.map(function (t) { return t.id; });
+      });
+      assert.deepStrictEqual(order.length, 2, 'queue should be the playlist');
+    });
+
+  await step('a track can be taken back out of a playlist', async function () {
+    await page.click('#tracklist .track:nth-child(1) .track-add');
+    await page.waitForSelector('#adddlg:not([hidden])');
+    await page.click('#add-playlists .pl-row.in');      // shows "Remove"
+    await page.click('#add-close');
+
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#tracklist .track').length === 1;
+    });
+  });
+
+  await step('playlists survive a reload, and can be deleted', async function () {
+    await page.reload();
+    await page.waitForSelector('#app:not([hidden])');
+    await page.waitForSelector('#browse:not([hidden])');
+
+    var names = await page.$$eval('.card-name', function (els) {
+      return els.map(function (e) { return e.textContent; });
+    });
+    assert.deepStrictEqual(names, ['Late Night'], 'playlist lost on reload: ' + names);
+
+    await page.click('.card:has(.card-name:text-is("Late Night"))');
+    await page.waitForSelector('#crumb-delete:not([hidden])');
+    await page.click('#crumb-delete');
+
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#browse .card').length === 0;
+    });
+
+    // Hand the app back on the Genres tab: later steps click genre chips, and
+    // those are hidden on every other tab.
+    await page.click('.tab[data-facet="genre"]');
+    await page.waitForSelector('#genres:not([hidden])');
   });
 
   /* ---- tagging a whole artist at once ---- */

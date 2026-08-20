@@ -63,6 +63,18 @@ otherwise. Do not add an HTTP-referrer restriction if you open the page as a
 Nothing is uploaded, and no audio is copied: tracks stream from Drive as they
 play.
 
+## Playlists
+
+The **+** on any row opens *Add to…*: play next, add to the queue, or drop the
+track into a playlist. Name one in the same dialog to start it. A row already
+in a playlist reads **Remove**, so the same control takes tracks back out.
+
+The **Playlists** tab lists them. A playlist plays in the order you built it,
+not the library's, and a track that has since left the Drive folder is simply
+skipped rather than breaking the list. Deleting is on the playlist's own
+header. Playlists ride along with **Settings → Export genres**, so they move
+between browsers with everything else.
+
 ## The queue
 
 The **+** on any row queues a track. Queued tracks play before the rest of the
@@ -79,6 +91,7 @@ drop individual tracks or clear the lot. A queue you built survives a reload.
 Three tabs above the list:
 
 - **Genres** — the chip bar, filtering the whole library by tag.
+- **Playlists** — lists you built by hand (see above).
 - **Artists** — every artist with a track count, most-played-by-you first.
 - **Albums** — the same for albums, read from ID3. Tracks with no album
   information are grouped under *No album* rather than hidden, and an album
@@ -291,7 +304,7 @@ it to the file it points at.
 
 ```
 node tests/units.js                      # 57 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 48 tests in a real browser
+npm i playwright && node tests/e2e.js    # 52 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

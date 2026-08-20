@@ -41,7 +41,12 @@
     toast: $('toast'), audio: $('audio'),
     queueBtn: $('btn-queue'), queueBadge: $('queue-badge'),
     queueDlg: $('queuedlg'), queueList: $('queue-list'), queueSub: $('queue-sub'),
-    queueClear: $('queue-clear'), queueClose: $('queue-close')
+    queueClear: $('queue-clear'), queueClose: $('queue-close'),
+    addDlg: $('adddlg'), addTitle: $('add-title'), addSub: $('add-sub'),
+    addPlayNext: $('add-playnext'), addQueue: $('add-queue'),
+    addPlaylists: $('add-playlists'), addNewName: $('add-newname'),
+    addCreate: $('add-create'), addClose: $('add-close'),
+    crumbDelete: $('crumb-delete')
   };
 
   var settings = Store.getSettings();
@@ -390,7 +395,21 @@
   }
 
   function applyFilter() {
-    view = tracks.filter(matches);
+    if (picked && picked.type === 'playlist') {
+      var byId = {};
+      tracks.forEach(function (t) { byId[t.id] = t; });
+
+      var list = Store.getPlaylists()[picked.key];
+      view = ((list && list.ids) || [])
+        .map(function (id) { return byId[id]; })
+        .filter(function (t) {
+          if (!t) return false;                       // no longer in the folder
+          return !query || t.haystack.indexOf(query) !== -1;
+        });
+    } else {
+      view = tracks.filter(matches);
+    }
+
     player.setQueue(view);
     renderList();
   }
@@ -402,6 +421,23 @@
    * order you want to browse in. */
   function groupBy(type) {
     var groups = {};
+
+    if (type === 'playlist') {
+      var byId = {};
+      tracks.forEach(function (t) { byId[t.id] = t; });
+
+      var lists = Store.getPlaylists();
+      return Object.keys(lists).map(function (key) {
+        var present = lists[key].ids.filter(function (id) { return byId[id]; });
+        return {
+          key: key,
+          label: lists[key].name,
+          sub: '',
+          count: present.length,
+          ids: present.slice(0, 6)
+        };
+      }).sort(function (a, b) { return a.label.localeCompare(b.label); });
+    }
 
     tracks.forEach(function (t) {
       var key = type === 'artist' ? artistKey(t) : albumKey(t);
@@ -518,6 +554,10 @@
       tab.classList.toggle('on', tab.dataset.facet === facet);
     });
 
+    els.empty.textContent = facet === 'playlist' && !picked
+      ? 'No playlists yet. Use the + on any track to start one.'
+      : 'Nothing here. Try another genre or clear the search.';
+
     if (browsing) {
       renderBrowse();
       return;
@@ -525,6 +565,7 @@
 
     if (picked) {
       els.crumbLabel.textContent = picked.label;
+      els.crumbDelete.hidden = picked.type !== 'playlist';
     }
 
     applyFilter();
@@ -648,13 +689,12 @@
       var add = document.createElement('button');
       add.type = 'button';
       add.className = 'track-add';
-      add.title = 'Add to queue';
-      add.setAttribute('aria-label', 'Add "' + displayName(track) + '" to the queue');
+      add.title = 'Add to queue or a playlist';
+      add.setAttribute('aria-label', 'Add "' + displayName(track) + '" to…');
       add.innerHTML = '<svg class="icon"><use href="#i-plus"></use></svg>';
       add.addEventListener('click', function (e) {
         e.stopPropagation();          // adding is not playing
-        player.enqueue(track, false);
-        toast('Queued "' + displayName(track) + '".');
+        openAddDialog(track);
       });
 
       var dur = document.createElement('div');
@@ -686,6 +726,120 @@
       rows[i].classList.toggle('playing', !!isIt);
     }
   }
+
+  /* ---------- adding to the queue or a playlist ---------- */
+
+  var adding = null;   // the track the add dialog is working on
+
+  function renderAddPlaylists() {
+    var lists = Store.getPlaylists();
+    var keys = Object.keys(lists).sort(function (a, b) {
+      return lists[a].name.localeCompare(lists[b].name);
+    });
+
+    els.addPlaylists.textContent = '';
+
+    if (!keys.length) {
+      var none = document.createElement('p');
+      none.className = 'dialog-sub';
+      none.textContent = 'None yet — name one below.';
+      els.addPlaylists.appendChild(none);
+      return;
+    }
+
+    keys.forEach(function (key) {
+      var list = lists[key];
+      var already = adding && list.ids.indexOf(adding.id) !== -1;
+
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'ghost wide pl-row' + (already ? ' in' : '');
+
+      var name = document.createElement('span');
+      name.textContent = list.name;
+
+      var count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = already ? 'Remove' : list.ids.length + ' tracks';
+
+      row.appendChild(name);
+      row.appendChild(count);
+
+      row.addEventListener('click', function () {
+        if (!adding) return;
+
+        if (already) {
+          Store.removeFromPlaylist(key, adding.id);
+          toast('Removed from "' + list.name + '".');
+        } else {
+          Store.addToPlaylist(key, adding.id);
+          toast('Added to "' + list.name + '".');
+        }
+
+        renderAddPlaylists();
+        if (facet === 'playlist') renderView();
+      });
+
+      els.addPlaylists.appendChild(row);
+    });
+  }
+
+  function openAddDialog(track) {
+    adding = track;
+    els.addTitle.textContent = displayName(track);
+    els.addSub.textContent = track.artist || 'Unknown artist';
+    els.addNewName.value = '';
+    renderAddPlaylists();
+    els.addDlg.hidden = false;
+  }
+
+  function closeAddDialog() {
+    els.addDlg.hidden = true;
+    adding = null;
+  }
+
+  els.addClose.addEventListener('click', closeAddDialog);
+
+  els.addQueue.addEventListener('click', function () {
+    if (!adding) return;
+    player.enqueue(adding, false);
+    toast('Queued "' + displayName(adding) + '".');
+    closeAddDialog();
+  });
+
+  els.addPlayNext.addEventListener('click', function () {
+    if (!adding) return;
+    player.enqueue(adding, true);
+    toast('Playing "' + displayName(adding) + '" next.');
+    closeAddDialog();
+  });
+
+  els.addCreate.addEventListener('click', function () {
+    var name = els.addNewName.value.trim();
+    if (!name) { toast('Give the playlist a name first.'); return; }
+    if (!adding) return;
+
+    var key = Store.createPlaylist(name);
+    Store.addToPlaylist(key, adding.id);
+
+    els.addNewName.value = '';
+    renderAddPlaylists();
+    if (facet === 'playlist') renderView();
+    toast('Started "' + name + '".');
+  });
+
+  els.addNewName.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') els.addCreate.click();
+  });
+
+  els.crumbDelete.addEventListener('click', function () {
+    if (!picked || picked.type !== 'playlist') return;
+    var name = picked.label;
+    Store.deletePlaylist(picked.key);
+    picked = null;
+    renderView();
+    toast('Deleted "' + name + '".');
+  });
 
   /* ---------- the queue ---------- */
 
@@ -1029,7 +1183,8 @@
     download('drive-player-genres.json', {
       version: 2,
       artists: Store.getArtistRules(),
-      tracks: Store.getOverrides()
+      tracks: Store.getOverrides(),
+      playlists: Store.getPlaylists()
     });
   });
 
@@ -1155,6 +1310,8 @@
       var artists = 0;
       var trackEdits = 0;
 
+      if (data.playlists) Store.replacePlaylists(data.playlists);
+
       if (data.artists || data.tracks) {
         // Current format. Artist rules merge, so importing a file covering
         // part of the library never wipes work already done.
@@ -1268,7 +1425,8 @@
     var typing = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
 
     if (e.key === 'Escape') {
-      if (!els.queueDlg.hidden) els.queueDlg.hidden = true;
+      if (!els.addDlg.hidden) closeAddDialog();
+      else if (!els.queueDlg.hidden) els.queueDlg.hidden = true;
       else if (!els.tagdlg.hidden) closeTagDialog();
       else if (!els.setdlg.hidden) els.setdlg.hidden = true;
       else if (typing) e.target.blur();
