@@ -178,6 +178,14 @@
       tracks = files.map(buildTrack);
       els.refresh.disabled = false;
 
+      // A new listing is worth a fresh look: what was tried against the last
+      // one may have been read into a cache since cleared, or refused a key
+      // since corrected. The per-load budget stays spent.
+      enrichQueue = [];
+      enrichQueued = {};
+      enrichFailures = 0;
+      enrichStopped = false;
+
       if (!tracks.length) {
         setStatus('No audio files in that folder. Check the link, or that the ' +
           'files are audio rather than shortcuts.', true);
@@ -188,6 +196,19 @@
       restoreQueue();
       renderGenres();
       renderView();
+
+      // A grid has no list to play from, so renderView leaves the play order
+      // as it was: empty after a first load, which left Play doing nothing,
+      // or holding the last listing's tracks and the URLs - and key - they
+      // were built with. Carry it over onto this listing, or failing that
+      // play the library.
+      if (els.list.hidden) {
+        var byId = {};
+        tracks.forEach(function (t) { byId[t.id] = t; });
+        var kept = player.queue.map(function (t) { return byId[t.id]; }).filter(Boolean);
+        player.setQueue(kept.length ? kept : tracks);
+      }
+
       enrichVisible();
       return tracks;
     }).catch(function (err) {
@@ -211,7 +232,7 @@
   }
 
   /* ---------- metadata enrichment ----------
-   * Read the head of each untagged file, a few at a time, and fold the ID3
+   * Read the head of each untagged file, one at a time, and fold the ID3
    * tag in as it arrives. Cached files are skipped, so this only costs
    * anything the first time a library is opened. */
 
@@ -223,57 +244,98 @@
    * So: one request at a time, spaced, only for tracks actually on screen,
    * and a hard ceiling per page load. Tags are a nicety; playback is not. */
   var enrichQueue = [];
-  var enrichQueued = {};
-  var enrichActive = 0;
-  var ENRICH_CONCURRENCY = 1;
+  var enrichQueued = {};         // queued, or already tried, since the last listing
+  var enrichBusy = false;        // a read, or the gap after one, is under way
   var ENRICH_GAP_MS = 400;
-  var ENRICH_WINDOW = 60;        // how far down the visible list to look
+  var ENRICH_WINDOW = 60;        // how many rows down from the top of the screen
   var ENRICH_BUDGET = 300;       // per page load, never per library
   var enrichSpent = 0;
   var enrichFailures = 0;
   var enrichStopped = false;
   var redrawTimer = null;
 
+  /* A redraw swaps every row for a new element, and a click whose press
+   * landed on the old one never arrives. So a redraw that falls due mid-press
+   * waits for the release - for a second at most, so a pointer held down
+   * cannot freeze the list. */
+  var pressedAt = 0;
+  document.addEventListener('pointerdown', function () { pressedAt = Date.now(); }, true);
+  document.addEventListener('pointerup', function () { pressedAt = 0; }, true);
+  document.addEventListener('pointercancel', function () { pressedAt = 0; }, true);
+
   function scheduleRedraw() {
     if (redrawTimer) return;
-    redrawTimer = setTimeout(function () {
+    redrawTimer = setTimeout(function redraw() {
+      if (pressedAt && Date.now() - pressedAt < 1000) {
+        redrawTimer = setTimeout(redraw, 100);
+        return;
+      }
       redrawTimer = null;
       renderGenres();
       renderView();
     }, 400);
   }
 
-  /* Queues tag reads for what the listener can actually see, plus whatever
-   * is playing. Called again whenever the view changes, so scrolling through
-   * a library fills it in gradually instead of all at once. */
+  /* What the listener can actually see. In a list, the rows from the top of
+   * the screen down. On the Albums grid, every untagged track: an album's
+   * name lives in its tags, so until one is read the track sits in No album,
+   * and the grid reads its way through the library in order - only search
+   * matches, while searching. The other grids draw without tags. */
+  function onScreen() {
+    if (!els.list.hidden) {
+      var from = firstVisibleRow();
+      return view.slice(from, from + ENRICH_WINDOW);
+    }
+
+    if (facet !== 'album') return [];
+
+    var out = [];
+    for (var i = 0; i < tracks.length && out.length < ENRICH_WINDOW; i++) {
+      var t = tracks[i];
+      if (t.tagged || enrichQueued[t.id]) continue;
+      if (query && t.haystack.indexOf(query) === -1) continue;
+      out.push(t);
+    }
+    return out;
+  }
+
+  /* The index in view of the row at the top of the screen. */
+  function firstVisibleRow() {
+    var rows = els.list.children;
+    var top = els.main.getBoundingClientRect().top;
+    var lo = 0;
+    var hi = rows.length;
+
+    while (lo < hi) {             // rows run top to bottom, so bisect
+      var mid = (lo + hi) >> 1;
+      if (rows[mid].getBoundingClientRect().bottom <= top) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /* Queues tag reads for what is on screen, plus whatever is playing. Called
+   * again whenever the view changes or the list scrolls, so a library fills
+   * in gradually as it is browsed. The queue is rebuilt rather than added
+   * to: reads queued for a screen since scrolled or clicked away from are
+   * dropped unread, since the budget is for what is shown. */
   function enrichVisible() {
     if (enrichStopped || enrichSpent >= ENRICH_BUDGET) return;
 
-    var wanted = [];
-    var playing = player.nowPlaying();
-    if (playing && !playing.tagged) wanted.push(playing);
+    enrichQueue.forEach(function (t) { delete enrichQueued[t.id]; });
+    enrichQueue = [];
 
-    view.slice(0, ENRICH_WINDOW).forEach(function (t) {
-      if (!t.tagged) wanted.push(t);
-    });
-
-    var added = 0;
-    wanted.forEach(function (t) {
-      if (enrichQueued[t.id]) return;
+    [player.nowPlaying()].concat(onScreen()).forEach(function (t) {
+      if (!t || t.tagged || enrichQueued[t.id]) return;
       enrichQueued[t.id] = true;
       enrichQueue.push(t);
-      added++;
     });
 
-    if (!added) return;
-    for (var i = enrichActive; i < ENRICH_CONCURRENCY; i++) enrichNext();
+    if (!enrichBusy) enrichNext();
   }
 
   function enrichNext() {
-    if (!enrichQueue.length) {
-      if (enrichActive === 0) scheduleRedraw();
-      return;
-    }
+    if (!enrichQueue.length) return;
 
     if (enrichSpent >= ENRICH_BUDGET) {
       enrichStopped = true;
@@ -282,7 +344,7 @@
     }
 
     var track = enrichQueue.shift();
-    enrichActive++;
+    enrichBusy = true;
     enrichSpent++;
 
     Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
@@ -332,9 +394,16 @@
     }).catch(function () {
       /* leave it on the filename guess */
     }).then(function () {
-      enrichActive--;
-      if (enrichStopped) return;
-      setTimeout(enrichNext, ENRICH_GAP_MS);
+      if (enrichStopped) { enrichBusy = false; return; }
+
+      // Only the end of this gap starts the next read. Starting one whenever
+      // the view changed - as it used to, if that fell inside a gap - ran a
+      // second chain of reads alongside the first.
+      setTimeout(function () {
+        enrichBusy = false;
+        if (enrichQueue.length) enrichNext();
+        else scheduleRedraw();   // this screen is done; the redraw looks again
+      }, ENRICH_GAP_MS);
     });
   }
 
@@ -380,7 +449,7 @@
     return Genres.normaliseArtist(track.artist);
   }
 
-  function matches(track) {
+  function matches(track, q) {
     // The genre chips belong to the Genres tab; browsing by artist or album
     // is its own axis rather than something stacked on top of a genre.
     if (facet === 'genre' && genre !== 'All' && track.tags.indexOf(genre) === -1) return false;
@@ -390,11 +459,16 @@
       if (key !== picked.key) return false;
     }
 
-    if (query && track.haystack.indexOf(query) === -1) return false;
+    if (q && track.haystack.indexOf(q) === -1) return false;
     return true;
   }
 
   function applyFilter() {
+    // Inside a card, the search that found it is spent: "late" finds the
+    // Late Night playlist and says nothing about the songs in it, so applying
+    // it again emptied the card. Anything typed once inside still narrows.
+    var q = picked && picked.found === query ? '' : query;
+
     if (picked && picked.type === 'playlist') {
       var byId = {};
       tracks.forEach(function (t) { byId[t.id] = t; });
@@ -404,10 +478,10 @@
         .map(function (id) { return byId[id]; })
         .filter(function (t) {
           if (!t) return false;                       // no longer in the folder
-          return !query || t.haystack.indexOf(query) !== -1;
+          return !q || t.haystack.indexOf(q) !== -1;
         });
     } else {
-      view = tracks.filter(matches);
+      view = tracks.filter(function (t) { return matches(t, q); });
     }
 
     player.setQueue(view);
@@ -420,7 +494,9 @@
    * so the acts you have most of come first, which is nearly always the
    * order you want to browse in. */
   function groupBy(type) {
-    var groups = {};
+    // No prototype: an album called "Constructor" would otherwise find
+    // Object's own constructor already sitting under its key.
+    var groups = Object.create(null);
 
     if (type === 'playlist') {
       var byId = {};
@@ -443,24 +519,28 @@
       var key = type === 'artist' ? artistKey(t) : albumKey(t);
       if (type === 'artist' && !key) return;   // no artist to group under
 
-      if (!groups[key]) {
-        groups[key] = {
+      var group = groups[key];
+      if (!group) {
+        group = groups[key] = {
           key: key,
           label: type === 'artist' ? (t.artist || 'Unknown artist')
                                    : (t.album || 'No album'),
-          sub: type === 'album' ? (t.artist || '') : '',
+          sub: '',
           count: 0,
           ids: []      // candidates to take a cover from
         };
       }
 
-      if (groups[key].ids.length < 6) groups[key].ids.push(t.id);
+      if (group.ids.length < 6) group.ids.push(t.id);
+      group.count++;
 
-      groups[key].count++;
-      // One album can credit several artists; say so rather than picking one.
-      if (type === 'album' && groups[key].sub && t.artist &&
-          groups[key].sub !== t.artist) {
-        groups[key].sub = 'Various artists';
+      // One album can credit several artists; say so rather than picking
+      // one. Credited from the first track that names anyone, not just the
+      // first track, and compared the way artists are grouped, so a stray
+      // capital does not make an album Various.
+      if (type === 'album' && t.artist && group.sub !== 'Various artists') {
+        if (!group.sub) group.sub = t.artist;
+        else if (Genres.normaliseArtist(group.sub) !== artistKey(t)) group.sub = 'Various artists';
       }
     });
 
@@ -469,6 +549,74 @@
         if (b.count !== a.count) return b.count - a.count;
         return a.label.localeCompare(b.label);
       });
+  }
+
+  /* Cards are kept between redraws, by tab and group, and updated in place.
+   * The Albums grid redraws every time a tag lands, and a rebuilt card is a
+   * new element: one that has dropped keyboard focus, and repaints its cover
+   * from scratch. */
+  var cards = Object.create(null);
+
+  function makeCard() {
+    var card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card';
+
+    var art = document.createElement('img');
+    art.className = 'card-art';
+    art.alt = '';
+    art.loading = 'lazy';
+    art.src = BLANK_PX;
+
+    var name = document.createElement('span');
+    name.className = 'card-name';
+
+    var sub = document.createElement('span');
+    sub.className = 'card-sub';
+
+    var count = document.createElement('span');
+    count.className = 'card-count';
+
+    card.appendChild(art);
+    card.appendChild(name);
+    card.appendChild(sub);
+    card.appendChild(count);
+    card._parts = { art: art, name: name, sub: sub, count: count };
+
+    card.addEventListener('click', function () {
+      var entry = card._entry;
+      picked = { type: facet, key: entry.key, label: entry.label, found: query };
+      renderView();
+      els.main.scrollTop = 0;
+    });
+
+    return card;
+  }
+
+  function fillCard(card, entry) {
+    var parts = card._parts;
+    var count = entry.count + (entry.count === 1 ? ' track' : ' tracks');
+
+    // Only what changed, so nothing is re-announced that has not.
+    card._entry = entry;
+    if (parts.name.textContent !== entry.label) parts.name.textContent = entry.label;
+    if (parts.sub.textContent !== entry.sub) parts.sub.textContent = entry.sub;
+    parts.sub.hidden = !entry.sub;
+    if (parts.count.textContent !== count) parts.count.textContent = count;
+
+    // Any cover already stored for a track in this group will do; the first
+    // few are tried in turn rather than fetching anything new.
+    (function next(at) {
+      if (at >= entry.ids.length) {
+        if (parts.art.src !== BLANK_PX) parts.art.src = BLANK_PX;
+        return;
+      }
+      Artwork.get(entry.ids[at]).then(function (url) {
+        if (card._entry !== entry) return;           // redrawn since
+        if (!url) return next(at + 1);
+        if (parts.art.src !== url) parts.art.src = url;
+      });
+    })(0);
   }
 
   function renderBrowse() {
@@ -480,64 +628,37 @@
       });
     }
 
-    els.browse.textContent = '';
     els.empty.hidden = entries.length > 0;
 
-    var frag = document.createDocumentFragment();
+    var kept = Object.create(null);
+    var order = entries.map(function (entry) {
+      var id = facet + '\u0001' + entry.key;
+      var card = cards[id] || makeCard();
+      kept[id] = card;
+      fillCard(card, entry);
+      return card;
+    });
+    cards = kept;
 
-    entries.forEach(function (entry) {
-      var card = document.createElement('button');
-      card.type = 'button';
-      card.className = 'card';
-
-      // Any cover already stored for a track in this group will do; the first
-      // few are tried in turn rather than fetching anything new.
-      var art = document.createElement('img');
-      art.className = 'card-art';
-      art.alt = '';
-      art.loading = 'lazy';
-      art.src = BLANK_PX;
-      card.appendChild(art);
-
-      (function (ids) {
-        var at = 0;
-        (function next() {
-          if (at >= ids.length) return;
-          var id = ids[at++];
-          Artwork.get(id).then(function (url) {
-            if (url) art.src = url;
-            else next();
-          });
-        })();
-      })(entry.ids);
-
-      var name = document.createElement('span');
-      name.className = 'card-name';
-      name.textContent = entry.label;
-      card.appendChild(name);
-
-      if (entry.sub) {
-        var sub = document.createElement('span');
-        sub.className = 'card-sub';
-        sub.textContent = entry.sub;
-        card.appendChild(sub);
-      }
-
-      var count = document.createElement('span');
-      count.className = 'card-count';
-      count.textContent = entry.count + (entry.count === 1 ? ' track' : ' tracks');
-      card.appendChild(count);
-
-      card.addEventListener('click', function () {
-        picked = { type: facet, key: entry.key, label: entry.label };
-        renderView();
-        els.main.scrollTop = 0;
-      });
-
-      frag.appendChild(card);
+    // Re-lay the grid only when the order changed. Moving a card drops its
+    // focus, so that goes back where it was.
+    var shown = els.browse.children;
+    var same = shown.length === order.length && order.every(function (card, i) {
+      return shown[i] === card;
     });
 
-    els.browse.appendChild(frag);
+    if (!same) {
+      var focused = document.activeElement;
+      var frag = document.createDocumentFragment();
+      order.forEach(function (card) { frag.appendChild(card); });
+      els.browse.textContent = '';
+      els.browse.appendChild(frag);
+      if (order.indexOf(focused) !== -1 && document.activeElement !== focused) {
+        focused.focus({ preventScroll: true });
+      }
+    }
+
+    enrichVisible();
   }
 
   /* Decides which of the three panels - genre chips, browse grid, track list
@@ -1392,6 +1513,14 @@
     query = els.search.value.trim().toLowerCase();
     renderView();
   });
+
+  // Scrolling brings new rows on screen. Read theirs once it settles, rather
+  // than for every row that flies past on the way.
+  var scrollTimer = null;
+  els.main.addEventListener('scroll', function () {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(enrichVisible, 250);
+  }, { passive: true });
 
   els.refresh.addEventListener('click', function () { loadLibrary().catch(function () {}); });
 

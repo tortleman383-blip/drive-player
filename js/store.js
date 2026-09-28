@@ -174,17 +174,25 @@
                          : String(artist || '').toLowerCase().trim();
   }
 
+  /* A lookup by name that sees only what was actually stored. A plain object
+   * answers "constructor" with Object itself, so an artist or folder of that
+   * name found a function where its rule should be - and the artist rule
+   * then took the whole library load down trying to use it as a tag list. */
+  function own(map, key) {
+    return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+  }
+
   /* Looks up every credited artist, so "Kavinsky feat. Lovefoxxx" still
    * matches a rule saved for Kavinsky. */
   function getArtistRule(artist) {
     if (!artist) return null;
     var rules = getArtistRules();
-    var direct = rules[artistKey(artist)];
+    var direct = own(rules, artistKey(artist));
     if (direct) return direct;
 
     var parts = String(artist).split(/\s*(?:feat\.?|ft\.?|featuring|with|vs\.?|,|&|\/)\s*/i);
     for (var i = 0; i < parts.length; i++) {
-      var found = rules[artistKey(parts[i])];
+      var found = own(rules, artistKey(parts[i]));
       if (found) return found;
     }
     return null;
@@ -225,8 +233,7 @@
 
   function getOnline(artist) {
     if (!artist) return null;
-    var entry = getOnlineTags()[artistKey(artist)];
-    return entry || null;
+    return own(getOnlineTags(), artistKey(artist));
   }
 
   function setOnline(artist, tags, mbid) {
@@ -278,7 +285,7 @@
   function getFolderRule(folder) {
     var key = folderKey(folder);
     if (!key) return null;
-    return getFolderRules()[key] || null;
+    return own(getFolderRules(), key);
   }
 
   function setFolderRule(folder, rule) {
