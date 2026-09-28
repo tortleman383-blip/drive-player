@@ -15,15 +15,21 @@ var win = {};
 var ctx = vm.createContext({
   window: win, TextDecoder: TextDecoder, console: console,
   setTimeout: setTimeout, clearTimeout: clearTimeout, Promise: Promise,
-  fetch: function () { return Promise.reject(new Error('no network in tests')); }
+  fetch: function () { return Promise.reject(new Error('no network in tests')); },
+  // Nothing saved yet, and nothing kept.
+  localStorage: {
+    getItem: function () { return null; },
+    setItem: function () {},
+    removeItem: function () {}
+  }
 });
 
-['genres.js', 'musicbrainz.js', 'id3.js', 'drive.js'].forEach(function (f) {
+['genres.js', 'musicbrainz.js', 'id3.js', 'drive.js', 'store.js'].forEach(function (f) {
   vm.runInContext(fs.readFileSync(path.join(JS, f), 'utf8'), ctx, { filename: f });
 });
 
 var Genres = win.Genres, ID3 = win.ID3, Drive = win.Drive;
-var MusicBrainz = win.MusicBrainz;
+var MusicBrainz = win.MusicBrainz, Store = win.Store;
 
 // Arrays created inside the vm context have that context's Array prototype,
 // so compare copies rather than the originals.
@@ -687,6 +693,25 @@ test('a manual override beats every rule', function () {
 test('orderTags follows the taxonomy and keeps custom tags at the end', function () {
   var out = Genres.orderTags(['Late Night', 'Rock', 'Synth']);
   eqTags(out, ['Synth', 'Rock', 'Late Night']);
+});
+
+test('a name a plain object already has an answer for is just a name', function () {
+  // Lookups by name went through plain objects, which answer "constructor"
+  // with Object itself. The artist rule for anyone called Constructor was
+  // that function, the tagger tried to slice it as a tag list, and the whole
+  // library failed to load.
+  ['Constructor', 'CONSTRUCTOR', 'constructor'].forEach(function (name) {
+    assert.strictEqual(Genres.isKnownArtist(name), false, name);
+    eqTags(Genres.inferTags({ artist: name, title: 'Build' }), ['Unsorted']);
+    assert.strictEqual(Store.getArtistRule(name), null, name);
+    assert.strictEqual(Store.getOnline(name), null, name);
+    assert.strictEqual(Store.getFolderRule(name), null, name);
+  });
+
+  // Nor is a song of that name taken for a known artist and flipped.
+  var out = Drive.parseLibrary(['Some Song - Constructor.mp3']);
+  assert.strictEqual(out[0].artist, 'Some Song');
+  assert.strictEqual(out[0].title, 'Constructor');
 });
 
 pending.then(function () {

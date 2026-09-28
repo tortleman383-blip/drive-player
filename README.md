@@ -88,18 +88,22 @@ drop individual tracks or clear the lot. A queue you built survives a reload.
 
 ## Browsing
 
-Three tabs above the list:
+Four tabs above the list:
 
 - **Genres** — the chip bar, filtering the whole library by tag.
-- **Playlists** — lists you built by hand (see above).
 - **Artists** — every artist with a track count, most-played-by-you first.
 - **Albums** — the same for albums, read from ID3. Tracks with no album
   information are grouped under *No album* rather than hidden, and an album
-  credited to several artists shows as *Various artists*.
+  credited to several artists shows as *Various artists*. An album's name
+  only exists in its tags, so while this grid is showing it reads its way
+  through the tracks still waiting for one, and fills in as it goes.
+- **Playlists** — lists you built by hand (see above).
 
 Picking an artist or album filters the list to it; **Back** returns to the
-grid. Search narrows whichever view is showing, including the grids. The tab
-you were last on is remembered.
+grid. Search narrows whichever view is showing, including the grids — but
+not what is inside a card it found: `late` finds the *Late Night* playlist,
+and opening it shows every song in it. The tab you were last on is
+remembered.
 
 ## Genres
 
@@ -258,10 +262,13 @@ Lock-screen and headset buttons work too, via the Media Session API.
 
   Reading is deliberately slow and deliberately partial: one request at a
   time, spaced, only for tracks on screen or playing, and no more than 300 per
-  page load. A tag read costs a request per file, so doing a whole library at
-  once is a burst of hundreds of requests to googleapis — enough for Google to
-  decide the network is sending automated queries and block it outright, which
-  takes playback down too. Tags are a nicety; playback is not.
+  page load. "On screen" means the rows you have scrolled to, or on the Albums
+  grid the tracks still waiting for an album; reads queued for a screen you
+  have since moved on from are dropped, not made. A tag read costs a request
+  per file, so doing a whole library at once is a burst of hundreds of
+  requests to googleapis — enough for Google to decide the network is sending
+  automated queries and block it outright, which takes playback down too.
+  Tags are a nicety; playback is not.
 - **Artwork** costs no requests of its own. The tag pass already downloads the
   first 256 KB of a file, and an embedded cover is usually sitting in it, so
   the picture is taken from bytes already in hand, shrunk to 128px, and kept
@@ -303,8 +310,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 57 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 52 tests in a real browser
+node tests/units.js                      # 58 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 60 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

@@ -222,11 +222,18 @@
       .filter(Boolean);
   }
 
+  // Own entries only: a plain object answers "constructor" with Object
+  // itself, which an artist of that name would get back as its tags.
+  function tableTags(name) {
+    var key = normaliseArtist(name);
+    return Object.prototype.hasOwnProperty.call(ARTISTS, key) ? ARTISTS[key] : null;
+  }
+
   function fromArtist(artist) {
     var found = [];
     var candidates = [artist].concat(splitArtists(artist));
     for (var i = 0; i < candidates.length; i++) {
-      var tags = ARTISTS[normaliseArtist(candidates[i])];
+      var tags = tableTags(candidates[i]);
       if (tags) {
         for (var j = 0; j < tags.length; j++) {
           if (found.indexOf(tags[j]) === -1) found.push(tags[j]);

@@ -95,9 +95,9 @@ function apicFrame(mime, data) {
 
 function id3Buffer(meta) {
   var frames = Buffer.concat([
-    textFrame('TIT2', meta.title),
-    textFrame('TPE1', meta.artist),
-    textFrame('TALB', meta.album),
+    meta.title ? textFrame('TIT2', meta.title) : Buffer.alloc(0),
+    meta.artist ? textFrame('TPE1', meta.artist) : Buffer.alloc(0),
+    meta.album ? textFrame('TALB', meta.album) : Buffer.alloc(0),
     meta.picture ? apicFrame('image/png', meta.picture) : Buffer.alloc(0)
   ]);
   var body = Buffer.concat([frames, Buffer.alloc(128)]);
@@ -125,6 +125,34 @@ function wav(seconds, freq) {
 
 var AUDIO = wav(5, 440);
 
+// Albums only its tags know about: one whose first track credits nobody,
+// an artist spelled two ways, and names a plain object already has an
+// answer for.
+var ODD = 'odd-library';
+var ODD_FILES = {};
+ODD_FILES[ODD] = ['intro', 'heavy water', 'other side', 'build', 'proto'].map(function (name, i) {
+  return { id: 'o' + i, name: name + '.mp3', mimeType: 'audio/mpeg' };
+});
+var ODD_ID3 = {
+  o0: { title: 'Intro', album: 'Split' },
+  o1: { title: 'Heavy Water', artist: 'Grouper', album: 'Split' },
+  o2: { title: 'Other Side', artist: 'GROUPER', album: 'Split' },
+  o3: { title: 'Build', artist: 'Nobody', album: 'Constructor' },
+  o4: { title: 'Proto', artist: 'Nobody', album: '__proto__' }
+};
+
+// Enough tracks that most start off the bottom of the screen. The tags name
+// a different artist from the filename, so a row shows whether it was read.
+var BIG = 'big-library';
+var BIG_FILES = {};
+var BIG_ID3 = {};
+BIG_FILES[BIG] = [];
+for (var b = 0; b < 120; b++) {
+  var num = ('00' + b).slice(-3);
+  BIG_FILES[BIG].push({ id: 'b' + b, name: 'Artist ' + num + ' - Song ' + num + '.mp3', mimeType: 'audio/mpeg' });
+  BIG_ID3['b' + b] = { title: 'Song ' + num, artist: 'Band ' + num, album: 'Record ' + Math.floor(b / 10) };
+}
+
 /* ---------- static server for the app itself ---------- */
 
 var MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
@@ -145,6 +173,123 @@ function serve() {
     });
     server.listen(0, '127.0.0.1', function () { resolve(server); });
   });
+}
+
+/* ---------- a library in a context of its own ---------- */
+
+/* Opens the player in a fresh context against its own stubbed Drive, with
+ * the key and folder already saved so it goes straight to the library. Tag
+ * reads are answered after readDelay ms and counted, so a test can see
+ * which files were read and whether two reads were ever in flight at once. */
+async function openLibrary(browser, base, lib) {
+  var ctx = await browser.newContext();
+  var reads = { ids: [], inFlight: 0, maxInFlight: 0 };
+
+  await ctx.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
+    var request = route.request();
+    var url = new URL(request.url());
+
+    if (request.method() === 'OPTIONS') {
+      return route.fulfill({
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Headers': 'Range'
+        }
+      });
+    }
+
+    if (url.searchParams.get('alt') === 'media') {
+      var id = decodeURIComponent(url.pathname.split('/').pop());
+
+      if ((request.headers()['range'] || '').indexOf('bytes=0-262143') === 0) {
+        var meta = lib.id3[id];
+        reads.ids.push(id);
+        reads.inFlight++;
+        reads.maxInFlight = Math.max(reads.maxInFlight, reads.inFlight);
+
+        return new Promise(function (done) { setTimeout(done, lib.readDelay || 0); })
+          .then(function () {
+            reads.inFlight--;
+            return route.fulfill({
+              status: 206,
+              headers: { 'Content-Type': 'audio/mpeg', 'Access-Control-Allow-Origin': '*' },
+              body: meta ? id3Buffer(meta) : AUDIO.slice(0, 1024)
+            });
+          });
+      }
+
+      return route.fulfill({
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/wav',
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: AUDIO
+      });
+    }
+
+    var m = (url.searchParams.get('q') || '').match(/"([^"]+)" in parents/);
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ files: lib.files[m && m[1]] || [] })
+    });
+  });
+
+  var settings = { apiKey: 'AIzaTESTKEY', folderId: lib.folder };
+  Object.keys(lib.settings || {}).forEach(function (k) { settings[k] = lib.settings[k]; });
+
+  // Only the first load: a reload keeps whatever the page saved since.
+  await ctx.addInitScript(function (saved) {
+    if (!localStorage.getItem('drivePlayer.settings.v1')) {
+      localStorage.setItem('drivePlayer.settings.v1', saved);
+    }
+  }, JSON.stringify(settings));
+
+  var page = await ctx.newPage();
+  var errors = [];
+  page.on('pageerror', function (e) { errors.push(String(e)); });
+
+  await page.goto(base);
+  await page.waitForSelector('#app:not([hidden])');
+  return { ctx: ctx, page: page, reads: reads, errors: errors };
+}
+
+/* ---------- layout ---------- */
+
+function boxes(page) {
+  return page.evaluate(function () {
+    var box = function (sel) {
+      var b = document.querySelector(sel).getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom, height: b.height };
+    };
+    return {
+      tabs: box('.tabs'),
+      genres: box('#genres'),
+      main: box('.main'),
+      bar: box('.nowplaying'),
+      genresHidden: document.getElementById('genres').hidden,
+      viewport: window.innerHeight
+    };
+  });
+}
+
+/* The now playing bar keeps its own height at the bottom of the window, and
+ * the list or grid gets all the room between it and whatever is above. */
+function assertBarAtBottom(l, where) {
+  var above = l.genresHidden ? l.tabs.bottom : l.genres.bottom;
+  var seen = ' on the ' + where + ': ' + JSON.stringify(l);
+
+  assert.ok(l.bar.height > 50 && l.bar.height < 140,
+    'the now playing bar is ' + Math.round(l.bar.height) + 'px tall' + seen);
+  assert.ok(Math.abs(l.bar.bottom - l.viewport) < 2,
+    'the now playing bar is not at the bottom' + seen);
+  assert.ok(Math.abs(l.main.top - above) < 2 && Math.abs(l.main.bottom - l.bar.top) < 2,
+    'the list does not fill the room' + seen);
 }
 
 /* ---------- test harness ---------- */
@@ -901,6 +1046,25 @@ async function main() {
     });
   });
 
+  await step('a playlist found by searching opens with all of its tracks', async function () {
+    await page.click('#crumb-back');
+    await page.waitForSelector('#browse:not([hidden])');
+
+    // "late" finds Late Night by its name. Nothing about the song left in it
+    // says "late", so applying the search again inside emptied the list.
+    await page.fill('#search', 'late');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#browse .card').length === 1;
+    });
+    await page.click('.card:has(.card-name:text-is("Late Night"))');
+    await page.waitForSelector('#crumb:not([hidden])');
+
+    var rows = await page.$$eval('#tracklist .track', function (e) { return e.length; });
+    await page.fill('#search', '');
+
+    assert.strictEqual(rows, 1, 'the playlist came up empty');
+  });
+
   await step('playlists survive a reload, and can be deleted', async function () {
     await page.reload();
     await page.waitForSelector('#app:not([hidden])');
@@ -1266,6 +1430,42 @@ async function main() {
         'tracks without an album should still be reachable: ' + names);
     });
 
+  await step('the now playing bar stays a bar on the Albums tab, over the grid or an album',
+    async function () {
+      // The genre bar is hidden on every tab but Genres, and a hidden child
+      // takes no row: the grid slid into the genre bar's row and the 1fr went
+      // to the now playing bar, which ballooned over a short grid and went
+      // off the bottom of the screen under a long one.
+      assertBarAtBottom(await boxes(page), 'album grid');
+
+      await page.click('.card:has(.card-name:text-is("Dangerous Days"))');
+      await page.waitForSelector('#crumb:not([hidden])');
+      assertBarAtBottom(await boxes(page), 'album');
+
+      await page.click('#crumb-back');
+      await page.waitForSelector('#browse:not([hidden])');
+    });
+
+  await step('an album found by searching opens with all of its tracks', async function () {
+    // "No album" is the card's name, not anything a track says about itself,
+    // so applying the search that found the card again inside it emptied it.
+    await page.fill('#search', 'no album');
+    await page.waitForFunction(function () {
+      return document.querySelectorAll('#browse .card').length === 1;
+    });
+    await page.click('.card:has(.card-name:text-is("No album"))');
+    await page.waitForSelector('#crumb:not([hidden])');
+
+    var rows = await page.$$eval('#tracklist .track', function (e) { return e.length; });
+
+    // Tidy up before judging, so a failure here does not leak into later steps.
+    await page.fill('#search', '');
+    await page.click('#crumb-back');
+    await page.waitForSelector('#browse:not([hidden])');
+
+    assert.ok(rows > 0, 'the album came up empty');
+  });
+
   await step('an album can be applied to a whole folder at once', async function () {
     // Two tracks by different artists sit in "Deep Cuts"; naming the album
     // once should pull both together, the way a soundtrack needs.
@@ -1399,6 +1599,204 @@ async function main() {
 
     await ctx5.close();
   });
+
+  /* ---- the Albums tab, and reading tags as the library is browsed ---- */
+
+  await step('the Albums tab reads album names itself, even straight after a reload onto it',
+    async function () {
+      var lib = await openLibrary(browser, base, {
+        folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' }
+      });
+      var p = lib.page;
+      await p.waitForSelector('#browse:not([hidden])');
+
+      // Album names live in tags, and a grid has no rows on screen to read
+      // them for - so nothing was read, and every track sat in one "No
+      // album" card for good.
+      await p.waitForFunction(function () {
+        var names = Array.prototype.map.call(document.querySelectorAll('#browse .card-name'),
+          function (e) { return e.textContent; });
+        return ['Split', 'Constructor', '__proto__'].every(function (n) {
+          return names.indexOf(n) !== -1;
+        });
+      }, null, { timeout: 15000 });
+
+      // Credited from the first track that names anyone, and not made
+      // Various by a second spelling of the same artist.
+      var split = await p.evaluate(function () {
+        var cards = document.querySelectorAll('#browse .card');
+        for (var i = 0; i < cards.length; i++) {
+          if (cards[i].querySelector('.card-name').textContent !== 'Split') continue;
+          var sub = cards[i].querySelector('.card-sub');
+          return {
+            count: cards[i].querySelector('.card-count').textContent,
+            sub: sub ? sub.textContent : ''
+          };
+        }
+        return null;
+      });
+      assert.deepStrictEqual(split, { count: '3 tracks', sub: 'Grouper' });
+
+      assertBarAtBottom(await boxes(p), 'short album grid');
+
+      // A grid has no list to play from, and after a reload onto one Play
+      // found an empty queue and did nothing.
+      await p.click('#btn-play');
+      await p.waitForFunction(function () {
+        var a = document.getElementById('audio');
+        return !a.paused && a.currentTime > 0.1;
+      }, null, { timeout: 10000 });
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('scrolling the list reads the tags that come on screen, one at a time',
+    async function () {
+      var lib = await openLibrary(browser, base, {
+        folder: BIG, files: BIG_FILES, id3: BIG_ID3, readDelay: 200
+      });
+      var p = lib.page;
+      await p.waitForFunction(function () {
+        return document.querySelectorAll('#tracklist .track').length === 120;
+      });
+
+      await p.waitForFunction(function () {
+        return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+      }, null, { timeout: 10000 });
+
+      // Only the top sixty rows were ever read, however far down the list
+      // was scrolled.
+      await p.evaluate(function () {
+        var main = document.querySelector('.main');
+        main.scrollTop = main.scrollHeight;
+      });
+      await p.waitForFunction(function () {
+        var rows = document.querySelectorAll('#tracklist .track-artist');
+        return rows[rows.length - 1].textContent === 'Band 119';
+      }, null, { timeout: 15000 });
+
+      // What was queued for the top and scrolled away from is dropped, not
+      // read on the way.
+      assert.ok(lib.reads.ids.indexOf('b80') === -1,
+        'a row that was never on screen was read: ' + lib.reads.ids.join(' '));
+
+      // However often the view changes, one read in flight at a time: a
+      // change landing in the gap between two reads used to start a second
+      // chain of them.
+      var searches = ['artist 01', 'artist 04', 'artist 07', 'artist 02', 'artist 09', 'artist 05', ''];
+      for (var i = 0; i < searches.length; i++) {
+        await p.fill('#search', searches[i]);
+        await p.waitForTimeout(300);
+      }
+      assert.strictEqual(lib.reads.maxInFlight, 1,
+        lib.reads.maxInFlight + ' tag reads were in flight at once');
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('a click on an album holds while tags land and the grid redraws under it',
+    async function () {
+      var lib = await openLibrary(browser, base, {
+        folder: BIG, files: BIG_FILES, id3: BIG_ID3, settings: { facet: 'artist' }
+      });
+      var p = lib.page;
+
+      // A long grid: the now playing bar used to be pushed off the screen.
+      await p.waitForFunction(function () {
+        return document.querySelectorAll('#browse .card').length === 120;
+      });
+      assertBarAtBottom(await boxes(p), 'long artist grid');
+
+      await p.click('.tab[data-facet="album"]');
+      await p.waitForFunction(function () {
+        return document.querySelectorAll('#browse .card').length >= 2;
+      }, null, { timeout: 10000 });
+
+      // Every read that lands redraws the grid. Hold a press across one: the
+      // card pressed is the one that opens.
+      var target = await p.evaluate(function () {
+        var card = document.querySelector('#browse .card');
+        var r = card.getBoundingClientRect();
+        return {
+          x: r.left + r.width / 2,
+          y: r.top + r.height / 2,
+          name: card.querySelector('.card-name').textContent
+        };
+      });
+      await p.mouse.move(target.x, target.y);
+      await p.mouse.down();
+      await p.waitForTimeout(700);
+      await p.mouse.up();
+
+      await p.waitForSelector('#crumb:not([hidden])', { timeout: 3000 });
+      assert.strictEqual(await p.textContent('#crumb-label'), target.name);
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('a click on a row holds while tags land and the list redraws under it',
+    async function () {
+      var lib = await openLibrary(browser, base, { folder: BIG, files: BIG_FILES, id3: BIG_ID3 });
+      var p = lib.page;
+
+      // Reads are landing at the top of the list, each one rebuilding it -
+      // and a press on a row that is swapped out before the release is no
+      // click at all.
+      await p.waitForFunction(function () {
+        return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+      }, null, { timeout: 10000 });
+
+      var row = await p.evaluate(function () {
+        var r = document.querySelectorAll('#tracklist .track')[3]
+          .querySelector('.track-main').getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      await p.mouse.move(row.x, row.y);
+      await p.mouse.down();
+      await p.waitForTimeout(700);
+      await p.mouse.up();
+
+      await p.waitForFunction(function () {
+        var playing = window.DrivePlayer.player.nowPlaying();
+        return playing && playing.id === 'b3';
+      }, null, { timeout: 3000 });
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('clearing the metadata cache reads the tags again, without a reload',
+    async function () {
+      var lib = await openLibrary(browser, base, { folder: FOLDER, files: FILES, id3: ID3_FILES });
+      var p = lib.page;
+
+      await p.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('.track-artist'),
+          function (e) { return e.textContent === 'Perturbator'; });
+      }, null, { timeout: 10000 });
+
+      await p.click('#btn-settings');
+      await p.waitForSelector('#setdlg:not([hidden])');
+      await p.click('#set-clearcache');
+
+      // Every file had already been tried this page load, so none was read
+      // again: the tags stayed gone until the page itself was reloaded.
+      await p.waitForFunction(function () {
+        return !Array.prototype.some.call(document.querySelectorAll('.track-artist'),
+          function (e) { return e.textContent === 'Perturbator'; });
+      });
+      await p.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('.track-artist'),
+          function (e) { return e.textContent === 'Perturbator'; });
+      }, null, { timeout: 15000 });
+
+      await p.click('#set-cancel');
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
 
   await browser.close();
   server.close();

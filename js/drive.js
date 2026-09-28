@@ -317,7 +317,7 @@
    * Takes a list of filenames, returns their { artist, title } in order. */
   function parseLibrary(fileNames) {
     var parsed = (fileNames || []).map(parseFileName);
-    var counts = {};
+    var counts = Object.create(null);   // keyed by names, "constructor" included
 
     function key(value) {
       if (!value) return '';
