@@ -15,7 +15,8 @@
     app: $('app'), search: $('search'), refresh: $('btn-refresh'),
     main: document.querySelector('.main'),
     tabs: document.querySelectorAll('.tab'),
-    browse: $('browse'), crumb: $('crumb'), crumbBack: $('crumb-back'),
+    browse: $('browse'), browseNote: $('browse-note'),
+    crumb: $('crumb'), crumbBack: $('crumb-back'),
     crumbLabel: $('crumb-label'), crumbCount: $('crumb-count'),
     settings: $('btn-settings'), genres: $('genres'), status: $('status'),
     list: $('tracklist'), empty: $('empty'),
@@ -242,16 +243,19 @@
    * queries and block it outright - taking playback down with it.
    *
    * So: one request at a time, spaced, only for tracks actually on screen,
-   * and a hard ceiling per page load. Tags are a nicety; playback is not. */
+   * and a ceiling on how many in any stretch of time. Tags are a nicety;
+   * playback is not. */
   var enrichQueue = [];
   var enrichQueued = {};         // queued, or already tried, since the last listing
   var enrichBusy = false;        // a read, or the gap after one, is under way
   var ENRICH_GAP_MS = 400;
   var ENRICH_WINDOW = 60;        // how many rows down from the top of the screen
-  var ENRICH_BUDGET = 300;       // per page load, never per library
-  var enrichSpent = 0;
+  var ENRICH_BUDGET = 300;       // reads in any ENRICH_SPAN_MS, counted across reloads
+  var ENRICH_SPAN_MS = 15 * 60 * 1000;
   var enrichFailures = 0;
   var enrichStopped = false;
+  var enrichRestingUntil = 0;    // while the budget is spent
+  var restTimer = null;
   var redrawTimer = null;
 
   /* A redraw swaps every row for a new element, and a click whose press
@@ -320,7 +324,7 @@
    * to: reads queued for a screen since scrolled or clicked away from are
    * dropped unread, since the budget is for what is shown. */
   function enrichVisible() {
-    if (enrichStopped || enrichSpent >= ENRICH_BUDGET) return;
+    if (enrichStopped) return;
 
     enrichQueue.forEach(function (t) { delete enrichQueued[t.id]; });
     enrichQueue = [];
@@ -334,18 +338,43 @@
     if (!enrichBusy) enrichNext();
   }
 
+  /* How long until another read fits the budget; 0 while it has room. The
+   * reads are counted in storage rather than per page load: a count that
+   * reloading reset let a reload start a fresh burst, which is the very
+   * thing the ceiling is for. */
+  function budgetWait() {
+    var now = Date.now();
+    var recent = Store.recentReads(now - ENRICH_SPAN_MS, now);
+    if (recent.length < ENRICH_BUDGET) return 0;
+    return recent[recent.length - ENRICH_BUDGET] + ENRICH_SPAN_MS - now;
+  }
+
+  /* With the budget spent, rest until the oldest read in the span ages out
+   * and carry on from there - rather than stop until the next page load,
+   * which left the Albums grid stalled a few hundred tracks in. */
+  function restEnrich(wait) {
+    enrichRestingUntil = Date.now() + wait;
+    renderBrowseNote();
+    if (restTimer) return;
+
+    restTimer = setTimeout(function () {
+      restTimer = null;
+      enrichRestingUntil = 0;
+      enrichVisible();
+      renderBrowseNote();
+    }, wait + 1000);
+  }
+
   function enrichNext() {
     if (!enrichQueue.length) return;
 
-    if (enrichSpent >= ENRICH_BUDGET) {
-      enrichStopped = true;
-      enrichQueue = [];
-      return;
-    }
+    var wait = budgetWait();
+    if (wait > 0) { restEnrich(wait); return; }
 
     var track = enrichQueue.shift();
+    var now = Date.now();
     enrichBusy = true;
-    enrichSpent++;
+    Store.noteRead(now, now - ENRICH_SPAN_MS);
 
     Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
       if (!result.ok) {
@@ -394,6 +423,7 @@
     }).catch(function () {
       /* leave it on the filename guess */
     }).then(function () {
+      renderBrowseNote();
       if (enrichStopped) { enrichBusy = false; return; }
 
       // Only the end of this gap starts the next read. Starting one whenever
@@ -441,8 +471,31 @@
 
   var NO_ALBUM = '\u0000none';   // sorts nowhere near a real album name
 
+  // A trailing note on which edition this is: "(Deluxe Edition)", "[Bonus
+  // Track Version]", "(2016 Remaster)".
+  var EDITION = /\s*[\(\[][^\)\]]*\b(?:deluxe|expanded|special|anniversary|collector'?s|bonus|remaster(?:ed)?|edition|version|explicit|clean)\b[^\)\]]*[\)\]]\s*$/i;
+
+  /* One record reaches a library spelled several ways - straight apostrophes
+   * or curly, a comma or none, "(Bonus Track Version)" on some tracks and not
+   * others - and each spelling became an album of its own. None of it makes
+   * a different record, so the key ignores case, punctuation, accents and a
+   * trailing edition note. */
   function albumKey(track) {
-    return track.album ? track.album.toLowerCase().trim() : NO_ALBUM;
+    if (!track.album) return NO_ALBUM;
+
+    var name = track.album;
+    while (EDITION.test(name)) name = name.replace(EDITION, '');
+
+    var key = name.toLowerCase().normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')       // accents
+      .replace(/['\u2018\u2019`\u00b4]/g, '') // straight and curly apostrophes alike
+      .replace(/&/g, ' and ')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+
+    // A name of nothing but punctuation keeps it, rather than joining every
+    // other such name.
+    return key || track.album.toLowerCase().trim();
   }
 
   function artistKey(track) {
@@ -527,12 +580,18 @@
                                    : (t.album || 'No album'),
           sub: '',
           count: 0,
-          ids: []      // candidates to take a cover from
+          ids: [],     // candidates to take a cover from
+          names: []    // each spelling met, with how many tracks use it
         };
       }
 
       if (group.ids.length < 6) group.ids.push(t.id);
       group.count++;
+
+      var name = type === 'artist' ? t.artist : t.album;
+      var seen = group.names.filter(function (n) { return n.name === name; })[0];
+      if (seen) seen.tracks++;
+      else if (name) group.names.push({ name: name, tracks: 1 });
 
       // One album can credit several artists; say so rather than picking
       // one. Credited from the first track that names anyone, not just the
@@ -544,11 +603,20 @@
       }
     });
 
-    return Object.keys(groups).map(function (k) { return groups[k]; })
-      .sort(function (a, b) {
-        if (b.count !== a.count) return b.count - a.count;
-        return a.label.localeCompare(b.label);
+    return Object.keys(groups).map(function (k) {
+      // Named the way most of its tracks spell it, the first seen breaking a
+      // tie - not after whichever edition happened to be read first.
+      var group = groups[k];
+      var best = null;
+      group.names.forEach(function (n) {
+        if (!best || n.tracks > best.tracks) best = n;
       });
+      if (best) group.label = best.name;
+      return group;
+    }).sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label);
+    });
   }
 
   /* Cards are kept between redraws, by tab and group, and updated in place.
@@ -661,6 +729,40 @@
     enrichVisible();
   }
 
+  function clockTime(ms) {
+    return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  /* A line over the Albums grid on how far the tag reading has got. Until it
+   * is done, albums are still sitting in No album, and a grid that has
+   * stopped changing looks the same whether reading is resting, has been
+   * refused, or is finished - so it says which. */
+  function renderBrowseNote() {
+    var note = '';
+
+    if (facet === 'album' && !picked && tracks.length) {
+      var unread = tracks.filter(function (t) { return !t.tagged; }).length;
+
+      if (unread) {
+        note = 'Album names come from each file’s tags: ' +
+          (tracks.length - unread) + ' of ' + tracks.length + ' read so far.';
+        if (enrichStopped) {
+          note += ' Stopped, as Drive refused the last few. Reload to try again.';
+        } else if (enrichRestingUntil) {
+          note += ' Resting until ' + clockTime(enrichRestingUntil) + ' so Google ' +
+            'does not take this for automated traffic, then carrying on by itself.';
+        }
+      } else if (tracks.some(function (t) { return !t.album; })) {
+        note = 'Every track’s tags have been read, so what is left in No album ' +
+          'has no album name in its tags. Clicking a track’s genre can name ' +
+          'one for its whole folder.';
+      }
+    }
+
+    els.browseNote.textContent = note;
+    els.browseNote.hidden = !note;
+  }
+
   /* Decides which of the three panels - genre chips, browse grid, track list
    * - is on screen, and keeps them in step with the current facet. */
   function renderView() {
@@ -678,6 +780,8 @@
     els.empty.textContent = facet === 'playlist' && !picked
       ? 'No playlists yet. Use the + on any track to start one.'
       : 'Nothing here. Try another genre or clear the search.';
+
+    renderBrowseNote();
 
     if (browsing) {
       renderBrowse();

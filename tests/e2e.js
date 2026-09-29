@@ -71,8 +71,23 @@ function syncsafe(n) {
   return Buffer.from([(n >> 21) & 0x7f, (n >> 14) & 0x7f, (n >> 7) & 0x7f, n & 0x7f]);
 }
 
-function textFrame(id, text) {
-  var body = Buffer.concat([Buffer.from([0]), Buffer.from(text, 'latin1'), Buffer.from([0])]);
+/* Latin-1 where the text fits it, as most taggers write; otherwise UTF-16
+ * behind a byte order mark, in whichever order is asked for. */
+function textFrame(id, text, bigEndian) {
+  var body;
+  if (/^[\u0000-ÿ]*$/.test(text) && !bigEndian) {
+    body = Buffer.concat([Buffer.from([0]), Buffer.from(text, 'latin1'), Buffer.from([0])]);
+  } else {
+    var chars = Buffer.alloc(text.length * 2);
+    for (var i = 0; i < text.length; i++) {
+      if (bigEndian) chars.writeUInt16BE(text.charCodeAt(i), i * 2);
+      else chars.writeUInt16LE(text.charCodeAt(i), i * 2);
+    }
+    body = Buffer.concat([
+      Buffer.from([1]), Buffer.from(bigEndian ? [0xfe, 0xff] : [0xff, 0xfe]),
+      chars, Buffer.from([0, 0])
+    ]);
+  }
   var head = Buffer.alloc(10);
   head.write(id, 0, 'latin1');
   head.writeUInt32BE(body.length, 4);
@@ -95,9 +110,9 @@ function apicFrame(mime, data) {
 
 function id3Buffer(meta) {
   var frames = Buffer.concat([
-    meta.title ? textFrame('TIT2', meta.title) : Buffer.alloc(0),
-    meta.artist ? textFrame('TPE1', meta.artist) : Buffer.alloc(0),
-    meta.album ? textFrame('TALB', meta.album) : Buffer.alloc(0),
+    meta.title ? textFrame('TIT2', meta.title, meta.bigEndian) : Buffer.alloc(0),
+    meta.artist ? textFrame('TPE1', meta.artist, meta.bigEndian) : Buffer.alloc(0),
+    meta.album ? textFrame('TALB', meta.album, meta.bigEndian) : Buffer.alloc(0),
     meta.picture ? apicFrame('image/png', meta.picture) : Buffer.alloc(0)
   ]);
   var body = Buffer.concat([frames, Buffer.alloc(128)]);
@@ -126,11 +141,12 @@ function wav(seconds, freq) {
 var AUDIO = wav(5, 440);
 
 // Albums only its tags know about: one whose first track credits nobody,
-// an artist spelled two ways, and names a plain object already has an
-// answer for.
+// an artist spelled two ways, names a plain object already has an answer
+// for, and one record spelled three ways by three different rips.
 var ODD = 'odd-library';
 var ODD_FILES = {};
-ODD_FILES[ODD] = ['intro', 'heavy water', 'other side', 'build', 'proto'].map(function (name, i) {
+ODD_FILES[ODD] = ['intro', 'heavy water', 'other side', 'build', 'proto',
+                  'view', 'dancefloor', 'mardy'].map(function (name, i) {
   return { id: 'o' + i, name: name + '.mp3', mimeType: 'audio/mpeg' };
 });
 var ODD_ID3 = {
@@ -138,7 +154,13 @@ var ODD_ID3 = {
   o1: { title: 'Heavy Water', artist: 'Grouper', album: 'Split' },
   o2: { title: 'Other Side', artist: 'GROUPER', album: 'Split' },
   o3: { title: 'Build', artist: 'Nobody', album: 'Constructor' },
-  o4: { title: 'Proto', artist: 'Nobody', album: '__proto__' }
+  o4: { title: 'Proto', artist: 'Nobody', album: '__proto__' },
+  o5: { title: 'The View from the Afternoon', artist: 'Arctic Monkeys',
+        album: "Whatever People Say I Am, That's What I'm Not" },
+  o6: { title: 'I Bet You Look Good on the Dancefloor', artist: 'Arctic Monkeys',
+        album: 'Whatever People Say I Am, That’s What I’m Not', bigEndian: true },
+  o7: { title: 'Mardy Bum', artist: 'Arctic Monkeys',
+        album: "Whatever People Say I Am That's What I'm Not (Bonus Track Version)" }
 };
 
 // Enough tracks that most start off the bottom of the screen. The tags name
@@ -243,12 +265,14 @@ async function openLibrary(browser, base, lib) {
   var settings = { apiKey: 'AIzaTESTKEY', folderId: lib.folder };
   Object.keys(lib.settings || {}).forEach(function (k) { settings[k] = lib.settings[k]; });
 
+  var seed = { 'drivePlayer.settings.v1': JSON.stringify(settings) };
+  Object.keys(lib.storage || {}).forEach(function (k) { seed[k] = lib.storage[k]; });
+
   // Only the first load: a reload keeps whatever the page saved since.
-  await ctx.addInitScript(function (saved) {
-    if (!localStorage.getItem('drivePlayer.settings.v1')) {
-      localStorage.setItem('drivePlayer.settings.v1', saved);
-    }
-  }, JSON.stringify(settings));
+  await ctx.addInitScript(function (seed) {
+    if (localStorage.getItem('drivePlayer.settings.v1')) return;
+    Object.keys(seed).forEach(function (k) { localStorage.setItem(k, seed[k]); });
+  }, seed);
 
   var page = await ctx.newPage();
   var errors = [];
@@ -1430,6 +1454,15 @@ async function main() {
         'tracks without an album should still be reachable: ' + names);
     });
 
+  await step('once every tag is read, the Albums tab says what is left in No album',
+    async function () {
+      // A No album card that has stopped shrinking looked the same whether
+      // reading was resting, refused or finished.
+      await page.waitForSelector('#browse-note:not([hidden])');
+      var note = await page.textContent('#browse-note');
+      assert.ok(/no album name in its tags/.test(note), 'note: ' + note);
+    });
+
   await step('the now playing bar stays a bar on the Albums tab, over the grid or an album',
     async function () {
       // The genre bar is hidden on every tab but Genres, and a hidden child
@@ -1637,6 +1670,33 @@ async function main() {
       });
       assert.deepStrictEqual(split, { count: '3 tracks', sub: 'Grouper' });
 
+      // One record spelled three ways by three rips - straight apostrophes,
+      // curly ones in a tag written big-endian, and a bonus-track edition with
+      // no comma - is one record, named the way it was first met. Each used
+      // to be an album of its own.
+      await p.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('#browse .card'), function (c) {
+          return /whatever people say/i.test(c.querySelector('.card-name').textContent) &&
+            c.querySelector('.card-count').textContent === '3 tracks';
+        });
+      }, null, { timeout: 15000 });
+
+      var monkeys = await p.evaluate(function () {
+        return Array.prototype.filter.call(document.querySelectorAll('#browse .card'), function (c) {
+          return /whatever people say/i.test(c.querySelector('.card-name').textContent);
+        }).map(function (c) {
+          return c.querySelector('.card-name').textContent + ' / ' +
+            c.querySelector('.card-count').textContent;
+        });
+      });
+      assert.deepStrictEqual(monkeys, ["Whatever People Say I Am, That's What I'm Not / 3 tracks"]);
+
+      // With every tag read and every track in an album, nothing is left to
+      // say about the reading.
+      await p.waitForFunction(function () {
+        return document.getElementById('browse-note').hidden;
+      });
+
       assertBarAtBottom(await boxes(p), 'short album grid');
 
       // A grid has no list to play from, and after a reload onto one Play
@@ -1646,6 +1706,36 @@ async function main() {
         var a = document.getElementById('audio');
         return !a.paused && a.currentTime > 0.1;
       }, null, { timeout: 10000 });
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('with the tag budget spent, reading rests and then carries on by itself',
+    async function () {
+      // As if 300 tags had been read in the last fifteen minutes, freeing up
+      // a few seconds after the page opens. The count used to live in the
+      // page, so a reload reset it; now it is kept.
+      var spent = [];
+      for (var i = 0; i < 300; i++) spent.push(Date.now() - 15 * 60 * 1000 + 4000);
+
+      var lib = await openLibrary(browser, base, {
+        folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' },
+        storage: { 'drivePlayer.tagReads.v1': JSON.stringify(spent) }
+      });
+      var p = lib.page;
+
+      await p.waitForFunction(function () {
+        var note = document.getElementById('browse-note');
+        return !note.hidden && /Resting until/.test(note.textContent);
+      }, null, { timeout: 5000 });
+      assert.strictEqual(lib.reads.ids.length, 0, 'tags were read with the budget spent');
+
+      // Spent used to mean stopped until the next page load.
+      await p.waitForFunction(function () {
+        return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+          function (e) { return e.textContent === 'Split'; });
+      }, null, { timeout: 20000 });
 
       assert.deepStrictEqual(lib.errors, []);
       await lib.ctx.close();

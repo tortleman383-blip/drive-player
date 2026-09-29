@@ -96,7 +96,10 @@ Four tabs above the list:
   information are grouped under *No album* rather than hidden, and an album
   credited to several artists shows as *Various artists*. An album's name
   only exists in its tags, so while this grid is showing it reads its way
-  through the tracks still waiting for one, and fills in as it goes.
+  through the tracks still waiting for one, and fills in as it goes; a line
+  above it says how far that has got. One record spelled differently by
+  different rips — curly apostrophes or straight, a comma or none, a
+  `(Bonus Track Version)` on some tracks — is still one album.
 - **Playlists** — lists you built by hand (see above).
 
 Picking an artist or album filters the list to it; **Back** returns to the
@@ -149,7 +152,15 @@ parsed first, each side's text is counted across every file, and a pair is
 flipped when its second half looks more like an artist than its first (either
 the built-in table knows it, or it shows up in several filenames). Mixed
 conventions in one folder come out right, and a lone unknown name is left
-alone rather than flipped on a guess.
+alone rather than flipped on a guess. The band can be named last after a
+title that has a dash of its own, too: `Undone - The Sweater Song - Weezer`.
+
+A version label is part of the title, never the artist: `My Sweet Lord -
+Remastered 2014` is a song with no artist in its name, not a band called *My
+Sweet Lord*. To count as a label, every word in it has to be one that
+describes a version (`Single Version`, `Radio Edit`, `2009 Remaster`), so a
+title that only ends in such a word — `The xx - Intro`, `Pink Floyd - The
+Final Cut` — keeps its artist. A year on its own is never taken for a band.
 
 ### Fixing artist, album and grouping
 
@@ -261,14 +272,19 @@ Lock-screen and headset buttons work too, via the Media Session API.
   again, rather than writing down a verdict that was never reached.
 
   Reading is deliberately slow and deliberately partial: one request at a
-  time, spaced, only for tracks on screen or playing, and no more than 300 per
-  page load. "On screen" means the rows you have scrolled to, or on the Albums
-  grid the tracks still waiting for an album; reads queued for a screen you
-  have since moved on from are dropped, not made. A tag read costs a request
-  per file, so doing a whole library at once is a burst of hundreds of
-  requests to googleapis — enough for Google to decide the network is sending
-  automated queries and block it outright, which takes playback down too.
-  Tags are a nicety; playback is not.
+  time, spaced, only for tracks on screen or playing, and no more than 300 in
+  any fifteen minutes. "On screen" means the rows you have scrolled to, or on
+  the Albums grid the tracks still waiting for an album; reads queued for a
+  screen you have since moved on from are dropped, not made. A tag read costs
+  a request per file, so doing a whole library at once is a burst of hundreds
+  of requests to googleapis — enough for Google to decide the network is
+  sending automated queries and block it outright, which takes playback down
+  too. Tags are a nicety; playback is not.
+
+  The 300 are counted across reloads, so reloading does not start a fresh
+  allowance — that would make reloading to hurry the tags along exactly the
+  burst the limit is there to stop. Once they are spent, reading rests until
+  the oldest ages out and then carries on by itself.
 - **Artwork** costs no requests of its own. The tag pass already downloads the
   first 256 KB of a file, and an embedded cover is usually sitting in it, so
   the picture is taken from bytes already in hand, shrunk to 128px, and kept
@@ -310,8 +326,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 58 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 60 tests in a real browser
+node tests/units.js                      # 63 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 62 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

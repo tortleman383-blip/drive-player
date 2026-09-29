@@ -52,7 +52,13 @@
   function decode(bytes, encoding) {
     try {
       switch (encoding) {
-        case 1: return new TextDecoder('utf-16').decode(bytes);   // BOM
+        case 1:
+          // UTF-16 behind a byte order mark, which can say either order. A
+          // decoder for one order turns the other into garbage, so follow it.
+          if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+            return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+          }
+          return new TextDecoder('utf-16le').decode(bytes);
         case 2: return new TextDecoder('utf-16be').decode(bytes);
         case 3: return new TextDecoder('utf-8').decode(bytes);
         default: return new TextDecoder('iso-8859-1').decode(bytes);

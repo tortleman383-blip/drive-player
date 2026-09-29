@@ -313,6 +313,12 @@ a { color: var(--accent); }
   font-variant-numeric: tabular-nums;
 }
 
+.browse-note {
+  margin: 6px 12px 2px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
 .crumb {
   display: flex;
   align-items: center;

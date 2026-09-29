@@ -136,6 +136,34 @@ test('returns null for a file with no tag', function () {
   assert.strictEqual(ID3.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)), null);
 });
 
+test('reads UTF-16 text whichever byte order its mark says', function () {
+  // A decoder for one order reads the other as garbage: an album tagged
+  // big-endian came out as a row of CJK characters, and split off from the
+  // rest of its record.
+  function utf16Frame(id, text, bigEndian) {
+    var chars = Buffer.alloc(text.length * 2);
+    for (var i = 0; i < text.length; i++) {
+      if (bigEndian) chars.writeUInt16BE(text.charCodeAt(i), i * 2);
+      else chars.writeUInt16LE(text.charCodeAt(i), i * 2);
+    }
+    var body = Buffer.concat([
+      Buffer.from([1]), Buffer.from(bigEndian ? [0xfe, 0xff] : [0xff, 0xfe]),
+      chars, Buffer.from([0, 0])
+    ]);
+    var head = Buffer.alloc(10);
+    head.write(id, 0, 'latin1');
+    head.writeUInt32BE(body.length, 4);
+    return Buffer.concat([head, body]);
+  }
+
+  var album = 'Whatever People Say I Am, That’s What I’m Not';
+  [true, false].forEach(function (bigEndian) {
+    var buf = tag([utf16Frame('TALB', album, bigEndian)]);
+    var meta = ID3.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length));
+    assert.strictEqual(meta.album, album, bigEndian ? 'big-endian' : 'little-endian');
+  });
+});
+
 test('survives a truncated frame at the end of the fetched chunk', function () {
   var full = tag([textFrame('TIT2', 'Complete'), textFrame('TPE1', 'Cut Off Here')]);
   var short = full.slice(0, full.length - 12);
@@ -172,6 +200,77 @@ test('keeps the whole name as the title when there is no separator', function ()
 test('handles en and em dashes as separators', function () {
   assert.strictEqual(Drive.parseFileName('Boards of Canada – Roygbiv.mp3').artist, 'Boards of Canada');
   assert.strictEqual(Drive.parseFileName('Burial — Archangel.mp3').artist, 'Burial');
+});
+
+test('a version label after the title is part of the title, not the artist', function () {
+  [
+    ['My Sweet Lord - Remastered 2014.mp3', 'My Sweet Lord (Remastered 2014)'],
+    ['Heroes - 2017 Remaster.mp3', 'Heroes (2017 Remaster)'],
+    ['Borderline - Single Version.mp3', 'Borderline (Single Version)'],
+    ['Around the World - Radio Edit.mp3', 'Around the World (Radio Edit)'],
+    ["Everything's Not Lost - Includes Hidden Track 'Life Is For Living'.mp3",
+     "Everything's Not Lost (Includes Hidden Track 'Life Is For Living')"]
+  ].forEach(function (c) {
+    var r = Drive.parseFileName(c[0]);
+    assert.strictEqual(r.artist, '', c[0] + ' gave artist ' + r.artist);
+    assert.strictEqual(r.title, c[1]);
+  });
+
+  // With an artist in front, the label still stays out of the way.
+  var r = Drive.parseFileName('George Harrison - My Sweet Lord - Remastered 2014.mp3');
+  assert.strictEqual(r.artist, 'George Harrison');
+  assert.strictEqual(r.title, 'My Sweet Lord (Remastered 2014)');
+});
+
+test('a title that merely ends like a label keeps its artist', function () {
+  // Any second half ending in "intro", "radio", "cut" and the like used to
+  // be taken for a label, leaving the real artist with no credit at all.
+  [
+    ['The xx - Intro.mp3', 'The xx', 'Intro'],
+    ['Rammstein - Radio.mp3', 'Rammstein', 'Radio'],
+    ['Pink Floyd - The Final Cut.mp3', 'Pink Floyd', 'The Final Cut'],
+    ['Oasis - Live Forever.mp3', 'Oasis', 'Live Forever'],
+    ['Tame Impala - Borderline (Blood Orange Remix).mp3', 'Tame Impala', 'Borderline (Blood Orange Remix)'],
+    // A band called what a label says, named first.
+    ['Live - Lightning Crashes.mp3', 'Live', 'Lightning Crashes']
+  ].forEach(function (c) {
+    var r = Drive.parseFileName(c[0]);
+    assert.strictEqual(r.artist, c[1], c[0]);
+    assert.strictEqual(r.title, c[2], c[0]);
+
+    var lib = Drive.parseLibrary([c[0]])[0];
+    assert.strictEqual(lib.artist, c[1], c[0] + ' across the library');
+  });
+});
+
+test('a band named last, after a title with a dash in it, is found', function () {
+  var out = Drive.parseLibrary([
+    'Undone - The Sweater Song - Weezer.mp3',
+    'Endless, Nameless - Remastered 2021 - Nirvana.mp3',
+    'Weezer - Buddy Holly.mp3'
+  ]);
+  assert.strictEqual(out[0].artist, 'Weezer');
+  assert.strictEqual(out[0].title, 'Undone - The Sweater Song');
+  assert.strictEqual(out[1].artist, 'Nirvana');
+  assert.strictEqual(out[1].title, 'Endless, Nameless (Remastered 2021)');
+  assert.strictEqual(out[2].artist, 'Weezer');
+});
+
+test('a year is never taken for the artist, however often it recurs', function () {
+  // "(Remaster)" is stripped as noise, stranding its year - which then
+  // recurred across the album and was promoted to artist.
+  var out = Drive.parseLibrary([
+    'Moonage Daydream - 2012 (Remaster).mp3',
+    'Starman - 2012 (Remaster).mp3'
+  ]);
+  out.forEach(function (t) {
+    assert.notStrictEqual(t.artist, '2012', JSON.stringify(t));
+  });
+
+  // While a song that is a year still keeps its artist.
+  var prince = Drive.parseLibrary(['Prince - 1999.mp3'])[0];
+  assert.strictEqual(prince.artist, 'Prince');
+  assert.strictEqual(prince.title, '1999');
 });
 
 /* ---------- working out which half of a filename is the artist ---------- */

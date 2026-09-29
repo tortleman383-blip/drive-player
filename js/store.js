@@ -21,7 +21,8 @@
     details: 'drivePlayer.trackDetails.v1',
     folders: 'drivePlayer.folderRules.v1',
     queue: 'drivePlayer.queue.v1',
-    playlists: 'drivePlayer.playlists.v1'
+    playlists: 'drivePlayer.playlists.v1',
+    reads: 'drivePlayer.tagReads.v1'
   };
 
   var DEFAULT_SETTINGS = {
@@ -304,6 +305,30 @@
     if (map && map.folders) { folders = map.folders; write(KEYS.folders, folders); }
   }
 
+  /* When recent tag reads happened, so the pace they are held to outlasts a
+   * reload. Also kept in memory, so the pace holds for the page even where
+   * storage refuses to keep anything. */
+  var readLog = null;
+
+  function recentReads(since, until) {
+    if (!readLog) {
+      var stored = read(KEYS.reads, []);
+      readLog = Array.isArray(stored) ? stored : [];
+    }
+    // A time ahead of now is a clock that has since moved back; left in, it
+    // would hold the budget spent for as long as the clock is wrong.
+    readLog = readLog.filter(function (t) {
+      return typeof t === 'number' && t > since && t <= until;
+    });
+    return readLog.slice();
+  }
+
+  function noteRead(time, since) {
+    recentReads(since, time);
+    readLog.push(time);
+    write(KEYS.reads, readLog);
+  }
+
   /* The hand-queued list, as file ids. Kept so a reload does not throw away
    * a queue someone deliberately built. */
   function saveQueue(ids) {
@@ -375,6 +400,8 @@
 
   global.Store = {
     getSettings: getSettings,
+    recentReads: recentReads,
+    noteRead: noteRead,
     saveQueue: saveQueue,
     loadQueue: loadQueue,
     getPlaylists: getPlaylists,
