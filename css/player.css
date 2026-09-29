@@ -319,6 +319,15 @@ a { color: var(--accent); }
   color: var(--text-faint);
 }
 
+.browse-note .link {
+  padding: 0;
+  margin-left: 2px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.browse-note .link:hover { text-decoration: underline; }
+
 .crumb {
   display: flex;
   align-items: center;

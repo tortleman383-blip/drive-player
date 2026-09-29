@@ -97,9 +97,12 @@ Four tabs above the list:
   credited to several artists shows as *Various artists*. An album's name
   only exists in its tags, so while this grid is showing it reads its way
   through the tracks still waiting for one, and fills in as it goes; a line
-  above it says how far that has got. One record spelled differently by
-  different rips — curly apostrophes or straight, a comma or none, a
-  `(Bonus Track Version)` on some tracks — is still one album.
+  above it says how far that has got, and whether reading is resting or has
+  been refused by Drive. **Scan now** there goes ahead without waiting out a
+  rest, and **Try again** retries what Drive refused. One record spelled
+  differently by different rips — curly apostrophes or straight, a comma or
+  none, a `(Bonus Track Version)` or `- Deluxe Edition` on some tracks — is
+  still one album; hover a card to see a name too long to fit.
 - **Playlists** — lists you built by hand (see above).
 
 Picking an artist or album filters the list to it; **Back** returns to the
@@ -284,7 +287,10 @@ Lock-screen and headset buttons work too, via the Media Session API.
   The 300 are counted across reloads, so reloading does not start a fresh
   allowance — that would make reloading to hurry the tags along exactly the
   burst the limit is there to stop. Once they are spent, reading rests until
-  the oldest ages out and then carries on by itself.
+  the oldest ages out and then carries on by itself. **Scan now** over the
+  Albums grid skips the rest on request: it starts a fresh 300 at once,
+  still one read at a time and still stopping if Drive refuses a run of them,
+  so each further 300 takes another click rather than happening unasked.
 - **Artwork** costs no requests of its own. The tag pass already downloads the
   first 256 KB of a file, and an embedded cover is usually sitting in it, so
   the picture is taken from bytes already in hand, shrunk to 128px, and kept
@@ -327,7 +333,7 @@ it to the file it points at.
 
 ```
 node tests/units.js                      # 63 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 62 tests in a real browser
+npm i playwright && node tests/e2e.js    # 64 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

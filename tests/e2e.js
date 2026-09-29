@@ -142,11 +142,11 @@ var AUDIO = wav(5, 440);
 
 // Albums only its tags know about: one whose first track credits nobody,
 // an artist spelled two ways, names a plain object already has an answer
-// for, and one record spelled three ways by three different rips.
+// for, and one record spelled five ways by five different rips.
 var ODD = 'odd-library';
 var ODD_FILES = {};
 ODD_FILES[ODD] = ['intro', 'heavy water', 'other side', 'build', 'proto',
-                  'view', 'dancefloor', 'mardy'].map(function (name, i) {
+                  'view', 'dancefloor', 'mardy', 'sun', 'riot'].map(function (name, i) {
   return { id: 'o' + i, name: name + '.mp3', mimeType: 'audio/mpeg' };
 });
 var ODD_ID3 = {
@@ -160,7 +160,12 @@ var ODD_ID3 = {
   o6: { title: 'I Bet You Look Good on the Dancefloor', artist: 'Arctic Monkeys',
         album: 'Whatever People Say I Am, That’s What I’m Not', bigEndian: true },
   o7: { title: 'Mardy Bum', artist: 'Arctic Monkeys',
-        album: "Whatever People Say I Am That's What I'm Not (Bonus Track Version)" }
+        album: "Whatever People Say I Am That's What I'm Not (Bonus Track Version)" },
+  // A modifier-letter apostrophe, and an edition note after a dash.
+  o8: { title: 'When the Sun Goes Down', artist: 'Arctic Monkeys',
+        album: 'Whatever People Say I Am, That\u02bcs What I\u02bcm Not' },
+  o9: { title: 'Riot Van', artist: 'Arctic Monkeys',
+        album: "Whatever People Say I Am, That's What I'm Not - Deluxe Edition" }
 };
 
 // Enough tracks that most start off the bottom of the screen. The tags name
@@ -202,10 +207,11 @@ function serve() {
 /* Opens the player in a fresh context against its own stubbed Drive, with
  * the key and folder already saved so it goes straight to the library. Tag
  * reads are answered after readDelay ms and counted, so a test can see
- * which files were read and whether two reads were ever in flight at once. */
+ * which files were read and whether two reads were ever in flight at once;
+ * refuse(id), when given, picks the ones Drive turns away. */
 async function openLibrary(browser, base, lib) {
   var ctx = await browser.newContext();
-  var reads = { ids: [], inFlight: 0, maxInFlight: 0 };
+  var reads = { ids: [], refused: [], inFlight: 0, maxInFlight: 0 };
 
   await ctx.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
     var request = route.request();
@@ -227,6 +233,17 @@ async function openLibrary(browser, base, lib) {
 
       if ((request.headers()['range'] || '').indexOf('bytes=0-262143') === 0) {
         var meta = lib.id3[id];
+
+        if (lib.refuse && lib.refuse(id)) {
+          reads.refused.push(id);
+          return route.fulfill({
+            status: 403,
+            contentType: 'application/json',
+            headers: { 'Access-Control-Allow-Origin': '*' },
+            body: JSON.stringify({ error: { code: 403, message: 'nope' } })
+          });
+        }
+
         reads.ids.push(id);
         reads.inFlight++;
         reads.maxInFlight = Math.max(reads.maxInFlight, reads.inFlight);
@@ -1670,14 +1687,15 @@ async function main() {
       });
       assert.deepStrictEqual(split, { count: '3 tracks', sub: 'Grouper' });
 
-      // One record spelled three ways by three rips - straight apostrophes,
-      // curly ones in a tag written big-endian, and a bonus-track edition with
-      // no comma - is one record, named the way it was first met. Each used
-      // to be an album of its own.
+      // One record spelled five ways by five rips - straight apostrophes,
+      // curly ones in a tag written big-endian, modifier-letter ones, a
+      // bonus-track edition with no comma, and a deluxe edition after a dash
+      // - is one record, named the way it was first met. Each used to be an
+      // album of its own.
       await p.waitForFunction(function () {
         return Array.prototype.some.call(document.querySelectorAll('#browse .card'), function (c) {
           return /whatever people say/i.test(c.querySelector('.card-name').textContent) &&
-            c.querySelector('.card-count').textContent === '3 tracks';
+            c.querySelector('.card-count').textContent === '5 tracks';
         });
       }, null, { timeout: 15000 });
 
@@ -1686,10 +1704,14 @@ async function main() {
           return /whatever people say/i.test(c.querySelector('.card-name').textContent);
         }).map(function (c) {
           return c.querySelector('.card-name').textContent + ' / ' +
-            c.querySelector('.card-count').textContent;
+            c.querySelector('.card-count').textContent + ' / ' + c.title;
         });
       });
-      assert.deepStrictEqual(monkeys, ["Whatever People Say I Am, That's What I'm Not / 3 tracks"]);
+      // The card cuts a long name short; hovering it shows the whole thing.
+      assert.deepStrictEqual(monkeys, [
+        "Whatever People Say I Am, That's What I'm Not / 5 tracks / " +
+        "Whatever People Say I Am, That's What I'm Not — Arctic Monkeys"
+      ]);
 
       // With every tag read and every track in an album, nothing is left to
       // say about the reading.
@@ -1740,6 +1762,69 @@ async function main() {
       assert.deepStrictEqual(lib.errors, []);
       await lib.ctx.close();
     });
+
+  await step('Scan now goes ahead without waiting out the rest', async function () {
+    // Spent five minutes ago, so ten more to wait - unless asked not to.
+    var spent = [];
+    for (var i = 0; i < 300; i++) spent.push(Date.now() - 5 * 60 * 1000);
+
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' },
+      storage: { 'drivePlayer.tagReads.v1': JSON.stringify(spent) }
+    });
+    var p = lib.page;
+
+    await p.waitForSelector('#browse-scan:not([hidden])', { timeout: 5000 });
+    assert.strictEqual(await p.textContent('#browse-scan'), 'Scan now');
+    assert.strictEqual(lib.reads.ids.length, 0, 'tags were read with the budget spent');
+
+    await p.click('#browse-scan');
+    await p.waitForFunction(function () {
+      return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent === 'Split'; });
+    }, null, { timeout: 15000 });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('Try again goes back to what Drive refused, stopped or not', async function () {
+    var refusing = { all: true, ids: {} };
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' },
+      refuse: function (id) { return refusing.all || !!refusing.ids[id]; }
+    });
+    var p = lib.page;
+    var note = function () { return p.textContent('#browse-note-text'); };
+
+    // A run of refusals stops reading, and it used to take a reload to start
+    // it again.
+    await p.waitForFunction(function () {
+      return /Stopped/.test(document.getElementById('browse-note-text').textContent);
+    }, null, { timeout: 15000 });
+    assert.strictEqual(await p.textContent('#browse-scan'), 'Try again');
+
+    // Now Drive turns away only two files. They are skipped rather than
+    // stopping everything, and the note says so instead of looking stalled.
+    refusing = { all: false, ids: { o3: true, o4: true } };
+    await p.click('#browse-scan');
+    await p.waitForFunction(function () {
+      return /Drive refused 2 files/.test(document.getElementById('browse-note-text').textContent);
+    }, null, { timeout: 15000 });
+    assert.strictEqual(await p.textContent('#browse-scan'), 'Try again', await note());
+
+    // And once Drive relents, trying again reads them.
+    refusing = { all: false, ids: {} };
+    await p.click('#browse-scan');
+    await p.waitForFunction(function () {
+      var names = Array.prototype.map.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent; });
+      return names.indexOf('Constructor') !== -1 && names.indexOf('__proto__') !== -1;
+    }, null, { timeout: 15000 });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
 
   await step('scrolling the list reads the tags that come on screen, one at a time',
     async function () {
