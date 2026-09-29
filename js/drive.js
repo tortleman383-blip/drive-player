@@ -264,16 +264,41 @@
     /\s*\(\s*\d{1,2}\s*\)\s*$/g
   ];
 
-  /* Words that end a version label rather than name an act: the second half
-   * of "Borderline - Single Version" or "Paranoid - 2012 - Remaster" is part
-   * of the title, and reading it as an artist invents one. */
-  var QUALIFIER = /(?:^|\s)(?:version|edit|mix|remix|remaster(?:ed)?|master|cut|take|reprise|instrumental|acoustic|live|demo|mono|stereo|radio|extended|single|bonus|deluxe|interlude|intro|outro|skit|remake|rerecord(?:ed)?)\s*$/i;
+  /* A version label - "Single Version", "Radio Edit", "Remastered 2014",
+   * "2009 Remaster" - is part of the title, and reading it as an artist
+   * invents one. A part is a label only when every word in it is one that
+   * describes a version and at least one says which kind. A title that just
+   * ends in such a word - "Intro", "Radio", "The Final Cut" - is a title, and
+   * taking it for a label used to cost the real artist their credit. */
+  var LABEL_KIND = /^(?:version|edit|mix|remix|remaster(?:ed)?|live|acoustic|demo|instrumental|bonus|reprise|remake|rerecord(?:ed)?)$/;
+  var LABEL_WORD = /^(?:single|radio|album|original|extended|club|dub|short|long|alternate|alt|early|track|mono|stereo|digital|digitally|(?:19|20)\d{2})$/;
+
+  // Labels that say so from their first words, whatever follows: "Remastered
+  // in 2011", "Includes Hidden Track 'Life Is For Living'".
+  var LEADING_LABEL = /^(?:remaster(?:ed)?|(?:includes\s+)?hidden\s+track)\b/i;
+
+  function isLabel(part) {
+    var text = String(part || '').trim();
+    if (LEADING_LABEL.test(text)) return true;
+
+    var words = text.toLowerCase().replace(/[()\[\]]/g, ' ').split(/\s+/).filter(Boolean);
+    var kind = false;
+    for (var i = 0; i < words.length; i++) {
+      if (LABEL_KIND.test(words[i])) kind = true;
+      else if (!LABEL_WORD.test(words[i])) return false;
+    }
+    return kind;
+  }
 
   // Separators and punctuation stranded by the removals above.
   var STRANDED = /^[\s\-–—_.,·|]+|[\s\-–—_.,·|]+$/g;
 
-  /* Best-effort artist/title from a filename, for files with no ID3 tag. */
-  function parseFileName(name) {
+  /* Cleans a filename and splits it on its dashes, setting version labels
+   * aside wherever they sit after the first part: "My Sweet Lord -
+   * Remastered 2014", or "Endless, Nameless - Remastered 2021 - Nirvana"
+   * with the band named last. Returns what is left, and the labels as a
+   * suffix for the title. */
+  function splitFileName(name) {
     var s = String(name || '').replace(/\.[a-z0-9]{2,4}$/i, '');
     s = s.replace(/_/g, ' ').replace(NOISE, ' ');
 
@@ -283,28 +308,33 @@
     s = s.replace(/^\d{1,3}\s*[-.)]\s*/, '');       // leading track number
     s = s.replace(/^\d{1,3}\s+(?=\D)/, '');
 
-    var parts = s.split(/\s+[-–—]\s+/).filter(function (part) {
-      return part.trim();   // a stripped-out site name can leave a gap
+    var parts = s.split(/\s+[-–—]\s+/).map(function (part) {
+      return part.replace(STRANDED, '').trim();
+    }).filter(Boolean);   // a stripped-out site name can leave a gap
+
+    // Never the first part, which may be a band that happens to be called
+    // what a label says: "Live - Lightning Crashes".
+    var labels = [];
+    parts = parts.filter(function (part, i) {
+      if (i === 0 || !isLabel(part)) return true;
+      labels.push(part);
+      return false;
     });
 
-    // Peel version labels off the end before deciding what is the artist.
-    var qualifiers = [];
-    while (parts.length > 1 && QUALIFIER.test(parts[parts.length - 1])) {
-      qualifiers.unshift(parts.pop().trim());
-    }
-
-    var suffix = qualifiers.length ? ' (' + qualifiers.join(' - ') + ')' : '';
-
-    if (parts.length >= 2) {
-      return {
-        artist: parts[0].replace(STRANDED, '').trim(),
-        title: parts.slice(1).join(' - ').replace(STRANDED, '').trim() + suffix
-      };
-    }
     return {
-      artist: '',
-      title: (parts[0] || s).replace(STRANDED, '').trim() + suffix
+      parts: parts,
+      suffix: labels.length ? ' (' + labels.join(' - ') + ')' : '',
+      whole: s.replace(STRANDED, '').trim()
     };
+  }
+
+  /* Best-effort artist/title from a filename, for files with no ID3 tag. */
+  function parseFileName(name) {
+    var n = splitFileName(name);
+    if (n.parts.length >= 2) {
+      return { artist: n.parts[0], title: n.parts.slice(1).join(' - ') + n.suffix };
+    }
+    return { artist: '', title: (n.parts[0] || n.whole) + n.suffix };
   }
 
   /* Filenames arrive in both orders - "Weezer - Say It Ain't So" and
@@ -316,7 +346,7 @@
    *
    * Takes a list of filenames, returns their { artist, title } in order. */
   function parseLibrary(fileNames) {
-    var parsed = (fileNames || []).map(parseFileName);
+    var split = (fileNames || []).map(splitFileName);
     var counts = Object.create(null);   // keyed by names, "constructor" included
 
     function key(value) {
@@ -325,27 +355,36 @@
                            : String(value).toLowerCase().trim();
     }
 
-    parsed.forEach(function (p) {
-      [p.artist, p.title].forEach(function (value) {
+    split.forEach(function (n) {
+      n.parts.forEach(function (value) {
         var k = key(value);
         if (k) counts[k] = (counts[k] || 0) + 1;
       });
     });
 
     function score(value) {
-      if (!value) return -1;
+      // A year is never the band, however often it turns up: the one left
+      // behind by a stripped "(Remaster)" recurs across an album just as an
+      // artist's name would.
+      if (!value || /^(?:19|20)\d{2}$/.test(value)) return -1;
       var points = 0;
       if (global.Genres && global.Genres.isKnownArtist(value)) points += 2;
       if (counts[key(value)] > 1) points += 1;
       return points;
     }
 
-    return parsed.map(function (p) {
-      if (!p.artist) return p;
-      // Only flip on positive evidence for the other side.
-      return score(p.title) > score(p.artist)
-        ? { artist: p.title, title: p.artist }
-        : p;
+    return split.map(function (n) {
+      var parts = n.parts;
+      if (parts.length < 2) return { artist: '', title: (parts[0] || n.whole) + n.suffix };
+
+      // The band is named first or last - "Say It Ain't So - Weezer", or
+      // "Undone - The Sweater Song - Weezer" with a dash inside the title.
+      // Only move it to the end on positive evidence for that side.
+      var last = parts[parts.length - 1];
+      if (score(last) > score(parts[0])) {
+        return { artist: last, title: parts.slice(0, -1).join(' - ') + n.suffix };
+      }
+      return { artist: parts[0], title: parts.slice(1).join(' - ') + n.suffix };
     });
   }
 
