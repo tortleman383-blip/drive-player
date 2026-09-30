@@ -1490,8 +1490,12 @@ async function main() {
   await step('once every tag is read, the Albums tab says what is left in No album',
     async function () {
       // A No album card that has stopped shrinking looked the same whether
-      // reading was resting, refused or finished.
-      await page.waitForSelector('#browse-note:not([hidden])');
+      // reading was resting, refused or finished. Music has been playing, so
+      // reads come seconds apart and the last can still be on the way.
+      await page.waitForFunction(function () {
+        var note = document.getElementById('browse-note');
+        return !note.hidden && /no album name in its tags/.test(note.textContent);
+      }, null, { timeout: 30000 }).catch(function () {});
       var note = await page.textContent('#browse-note');
       assert.ok(/no album name in its tags/.test(note), 'note: ' + note);
     });
