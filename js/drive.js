@@ -156,23 +156,43 @@
     return walk(folderId, '', 0).then(function () { return tracks; });
   }
 
+  // What Drive says when the refusal is about how fast, not about the file.
+  var RATE_REASON = /rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded/i;
+
+  /* Whether a refusal is Google holding traffic back rather than anything to
+   * do with this file: a 429, a server error, or a 403 over a rate limit.
+   * Playback asks the same endpoint with the same key, so this is its
+   * problem too. */
+  function isThrottle(status, body) {
+    if (status === 429 || status >= 500) return true;
+    return status === 403 && RATE_REASON.test(body || '');
+  }
+
   /* Reads the head of a file so ID3 tags can be parsed without downloading
    * the whole track.
    *
-   * Resolves to { ok, buffer }. The distinction matters: "Drive would not
-   * give me the bytes" and "the bytes contain no tag" look identical to the
-   * caller otherwise, and caching the first as the second brands a file
-   * untaggable for good over what may be a temporary permission problem. */
+   * Resolves to { ok, buffer, throttled }. The distinctions matter: "Drive
+   * would not give me the bytes" and "the bytes contain no tag" look
+   * identical to the caller otherwise, and caching the first as the second
+   * brands a file untaggable for good over what may be a temporary
+   * permission problem. And "Google is holding traffic back" is not about
+   * this file at all, but about the playback that shares its key. */
   function fetchTagBytes(fileId, apiKey) {
     return fetch(streamUrl(fileId, apiKey), {
       headers: { Range: 'bytes=0-' + (TAG_BYTES - 1) }
     }).then(function (res) {
-      if (!res.ok) return { ok: false, buffer: null };
-      return res.arrayBuffer().then(function (buffer) {
-        return { ok: true, buffer: buffer };
+      if (res.ok) {
+        return res.arrayBuffer().then(function (buffer) {
+          return { ok: true, buffer: buffer };
+        });
+      }
+      return res.text().catch(function () { return ''; }).then(function (body) {
+        return { ok: false, buffer: null, throttled: isThrottle(res.status, body) };
       });
     }).catch(function () {
-      return { ok: false, buffer: null };
+      // No answer at all. A network Google has blocked gets a block page
+      // with no CORS headers, which lands here too.
+      return { ok: false, buffer: null, throttled: true };
     });
   }
 
@@ -189,6 +209,12 @@
       return 'Drive has flagged this file and will not serve it to an API key ' +
         '(cannotDownloadAbusiveFile).';
     }
+    // Before the general 403: a rate limit is not the key's settings, and
+    // saying it was sent people off to change settings that were fine.
+    if (status === 429 || (status === 403 && RATE_REASON.test(code + ' ' + reason))) {
+      return 'Google is rate-limiting requests from this key or connection (' +
+        status + '). It clears by itself within a few minutes.';
+    }
     if (status === 403) {
       return 'Drive refused the download (403). The key can list the folder but ' +
         'not fetch the audio - usually the Drive API is enabled but the key has ' +
@@ -199,7 +225,6 @@
         'something that is not shared, or it was removed.';
     }
     if (status === 416) return 'Drive rejected the range request (416).';
-    if (status === 429) return 'Drive is rate-limiting the key (429).';
     return 'Drive returned HTTP ' + status + '. ' + reason;
   }
 
@@ -214,7 +239,12 @@
       .then(function (res) {
         if (res.ok) return { ok: true, status: res.status };
         return res.text().then(function (body) {
-          return { ok: false, status: res.status, message: describeDownloadError(res.status, body) };
+          return {
+            ok: false,
+            status: res.status,
+            throttled: isThrottle(res.status, body),
+            message: describeDownloadError(res.status, body)
+          };
         });
       })
       .catch(function (e) {
@@ -228,6 +258,7 @@
           ok: false,
           status: 0,
           network: true,
+          throttled: true,
           message: 'The request never reached Drive (' + (e && e.message) + '). ' +
             'If google.com pages are also refusing to load with "your computer ' +
             'or network may be sending automated queries", Google has blocked ' +

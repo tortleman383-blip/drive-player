@@ -99,6 +99,7 @@
     <p id="browse-note" class="browse-note" hidden>
       <span id="browse-note-text"></span>
       <button id="browse-scan" class="link" type="button" hidden></button>
+      <button id="browse-read" class="link" type="button" hidden></button>
     </p>
     <div id="browse" class="browse" hidden></div>
     <ol id="tracklist" class="tracklist"></ol>
@@ -207,18 +208,29 @@
       <span>Google API key</span>
       <input id="set-key" type="password" spellcheck="false" autocomplete="off">
     </label>
+    <label class="check">
+      <input id="set-autotags" type="checkbox">
+      <span>Read album tags automatically</span>
+    </label>
+    <label class="check">
+      <input id="set-singles" type="checkbox">
+      <span>Put singles and tracks with no album on one card</span>
+    </label>
     <p class="dialog-sub">
       Genre edits live on this device. Export them to keep a copy or move them
       to another browser. <b>Export untagged artists</b> writes a file listing
       every artist the player could not place, ready to be filled in and
-      imported back. <b>Look up genres online</b> asks MusicBrainz about those
-      same artists — it sends their names, nothing else, and is limited to one
-      request a second, so a long list takes a few minutes.
+      imported back. <b>Export albums</b> does the same for albums: every track
+      with the album it is filed under, to correct any that are wrong — a
+      playlist's name, say. <b>Look up genres online</b> asks MusicBrainz about
+      the untagged artists — it sends their names, nothing else, and is limited
+      to one request a second, so a long list takes a few minutes.
     </p>
     <div class="dialog-actions wrap">
       <button id="set-export" class="ghost">Export genres</button>
-      <button id="set-import" class="ghost">Import genres</button>
+      <button id="set-import" class="ghost">Import a file</button>
       <button id="set-untagged" class="ghost">Export untagged artists</button>
+      <button id="set-albums" class="ghost">Export albums</button>
       <button id="set-lookup" class="ghost">Look up genres online</button>
       <button id="set-clearcache" class="ghost">Clear metadata cache</button>
       <input id="set-file" type="file" accept="application/json,.json" hidden>

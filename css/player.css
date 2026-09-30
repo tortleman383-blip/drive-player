@@ -327,6 +327,7 @@ a { color: var(--accent); }
 }
 
 .browse-note .link:hover { text-decoration: underline; }
+.browse-note .link:not([hidden]) + .link { margin-left: 12px; }
 
 .crumb {
   display: flex;

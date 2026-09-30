@@ -204,14 +204,70 @@ function serve() {
 
 /* ---------- a library in a context of its own ---------- */
 
+/* Left to itself the player reads no tags until asked, and puts albums of
+ * one track on a shared card. Most steps here are about how the reading and
+ * the album grid work, so every context starts out reading automatically
+ * with each album on a card of its own; a step about the defaults says so. */
+var TESTED_SETTINGS = { autoTags: true, groupSingles: false };
+
+/* For a context that goes through the setup screen: the settings above, in
+ * place before its first page load. */
+function seedSettings(ctx) {
+  return ctx.addInitScript(function (seed) {
+    if (localStorage.getItem('drivePlayer.settings.v1')) return;
+    localStorage.setItem('drivePlayer.settings.v1', JSON.stringify(seed));
+  }, TESTED_SETTINGS);
+}
+
+/* What a button's download would hold, captured rather than saved. */
+function exportFrom(page, buttonId) {
+  return page.evaluate(function (id) {
+    var realCreate = URL.createObjectURL;
+    return new Promise(function (resolve) {
+      var giveUp = setTimeout(function () {
+        URL.createObjectURL = realCreate;
+        resolve(null);
+      }, 5000);
+      URL.createObjectURL = function (blob) {
+        URL.createObjectURL = realCreate;
+        blob.text().then(function (text) {
+          clearTimeout(giveUp);
+          resolve(JSON.parse(text));
+        });
+        return 'blob:stub';
+      };
+      document.getElementById(id).click();
+    });
+  }, buttonId);
+}
+
+/* Imports data as though it were a file picked in Settings. */
+function importInto(page, data) {
+  return page.evaluate(function (data) {
+    var input = document.getElementById('set-file');
+    var dt = new DataTransfer();
+    dt.items.add(new File([JSON.stringify(data)], 'import.json', { type: 'application/json' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change'));
+  }, data);
+}
+
+function cardNames(page) {
+  return page.$$eval('#browse .card-name', function (els) {
+    return els.map(function (e) { return e.textContent; });
+  });
+}
+
 /* Opens the player in a fresh context against its own stubbed Drive, with
  * the key and folder already saved so it goes straight to the library. Tag
- * reads are answered after readDelay ms and counted, so a test can see
- * which files were read and whether two reads were ever in flight at once;
- * refuse(id), when given, picks the ones Drive turns away. */
+ * reads are answered after readDelay ms and counted, with when each began,
+ * so a test can see which files were read, how far apart, and whether two
+ * were ever in flight at once. refuse(id), when given, picks the ones Drive
+ * turns away - with a 403, or with whatever status it returns instead - and
+ * audioDelay holds back the audio itself, as a slow start does. */
 async function openLibrary(browser, base, lib) {
   var ctx = await browser.newContext();
-  var reads = { ids: [], refused: [], inFlight: 0, maxInFlight: 0 };
+  var reads = { ids: [], times: [], refused: [], inFlight: 0, maxInFlight: 0, audio: [] };
 
   await ctx.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
     var request = route.request();
@@ -234,17 +290,24 @@ async function openLibrary(browser, base, lib) {
       if ((request.headers()['range'] || '').indexOf('bytes=0-262143') === 0) {
         var meta = lib.id3[id];
 
-        if (lib.refuse && lib.refuse(id)) {
+        var refusal = lib.refuse && lib.refuse(id);
+        if (refusal) {
+          var status = refusal === true ? 403 : refusal;
           reads.refused.push(id);
           return route.fulfill({
-            status: 403,
+            status: status,
             contentType: 'application/json',
             headers: { 'Access-Control-Allow-Origin': '*' },
-            body: JSON.stringify({ error: { code: 403, message: 'nope' } })
+            body: JSON.stringify({ error: {
+              code: status,
+              message: status === 429 ? 'Rate Limit Exceeded' : 'nope',
+              errors: [{ reason: status === 429 ? 'rateLimitExceeded' : 'forbidden' }]
+            } })
           });
         }
 
         reads.ids.push(id);
+        reads.times.push(Date.now());
         reads.inFlight++;
         reads.maxInFlight = Math.max(reads.maxInFlight, reads.inFlight);
 
@@ -259,15 +322,22 @@ async function openLibrary(browser, base, lib) {
           });
       }
 
-      return route.fulfill({
-        status: 200,
-        headers: {
-          'Content-Type': 'audio/wav',
-          'Accept-Ranges': 'bytes',
-          'Access-Control-Allow-Origin': '*'
-        },
-        body: AUDIO
-      });
+      var asked = { id: id, start: Date.now(), end: 0 };
+      reads.audio.push(asked);
+
+      return new Promise(function (done) { setTimeout(done, lib.audioDelay || 0); })
+        .then(function () {
+          asked.end = Date.now();
+          return route.fulfill({
+            status: 200,
+            headers: {
+              'Content-Type': 'audio/wav',
+              'Accept-Ranges': 'bytes',
+              'Access-Control-Allow-Origin': '*'
+            },
+            body: AUDIO
+          });
+        });
     }
 
     var m = (url.searchParams.get('q') || '').match(/"([^"]+)" in parents/);
@@ -280,7 +350,9 @@ async function openLibrary(browser, base, lib) {
   });
 
   var settings = { apiKey: 'AIzaTESTKEY', folderId: lib.folder };
-  Object.keys(lib.settings || {}).forEach(function (k) { settings[k] = lib.settings[k]; });
+  [TESTED_SETTINGS, lib.settings || {}].forEach(function (from) {
+    Object.keys(from).forEach(function (k) { settings[k] = from[k]; });
+  });
 
   var seed = { 'drivePlayer.settings.v1': JSON.stringify(settings) };
   Object.keys(lib.storage || {}).forEach(function (k) { seed[k] = lib.storage[k]; });
@@ -363,6 +435,7 @@ async function main() {
 
   var browser = await chromium.launch(launch);
   var context = await browser.newContext();
+  await seedSettings(context);
   var page = await context.newPage();
 
   var consoleErrors = [];
@@ -744,6 +817,7 @@ async function main() {
   await step('a folder that lists but will not download explains itself',
     async function () {
       var ctx2 = await browser.newContext();
+      await seedSettings(ctx2);
 
       await ctx2.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
         var url = new URL(route.request().url());
@@ -796,6 +870,7 @@ async function main() {
   await step('a refused download is not remembered as "this file has no tag"',
     async function () {
       var ctxA = await browser.newContext();
+      await seedSettings(ctxA);
       var refuse = true;
 
       await ctxA.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
@@ -862,6 +937,7 @@ async function main() {
   await step('a folder that downloads but will not decode blames the format',
     async function () {
       var ctx3 = await browser.newContext();
+      await seedSettings(ctx3);
 
       await ctx3.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
         var url = new URL(route.request().url());
@@ -1474,8 +1550,12 @@ async function main() {
   await step('once every tag is read, the Albums tab says what is left in No album',
     async function () {
       // A No album card that has stopped shrinking looked the same whether
-      // reading was resting, refused or finished.
-      await page.waitForSelector('#browse-note:not([hidden])');
+      // reading was resting, refused or finished. Music has been playing, so
+      // reads come seconds apart and the last can still be on the way.
+      await page.waitForFunction(function () {
+        var note = document.getElementById('browse-note');
+        return !note.hidden && /no album name in its tags/.test(note.textContent);
+      }, null, { timeout: 30000 }).catch(function () {});
       var note = await page.textContent('#browse-note');
       assert.ok(/no album name in its tags/.test(note), 'note: ' + note);
     });
@@ -1826,6 +1906,86 @@ async function main() {
     await lib.ctx.close();
   });
 
+  /* ---- tag reads and playback share a key and a connection ---- */
+
+  await step('while music plays, tag reads slow down to leave it room', async function () {
+    var lib = await openLibrary(browser, base, { folder: BIG, files: BIG_FILES, id3: BIG_ID3 });
+    var p = lib.page;
+    await p.waitForFunction(function () {
+      return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+    }, null, { timeout: 10000 });
+
+    await p.click('#tracklist .track:nth-child(2)');
+    await p.waitForFunction(function () {
+      var a = document.getElementById('audio');
+      return !a.paused && a.currentTime > 0.1;
+    }, null, { timeout: 10000 });
+
+    // Each read is a 256 KB download on the key and connection the music is
+    // using. They used to keep coming every few hundred milliseconds, which
+    // is how reading album tags could get the music rate-limited.
+    var from = Date.now();
+    await p.waitForTimeout(9000);
+    var during = lib.reads.times.filter(function (t) { return t >= from; });
+    assert.ok(during.length <= 4, during.length + ' tag reads in 9s of playback');
+    during.slice(1).forEach(function (t, i) {
+      assert.ok(t - during[i] >= 2500, 'tag reads ' + (t - during[i]) + 'ms apart while playing');
+    });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('a tag read refused for its rate stops the reading at once', async function () {
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' },
+      refuse: function () { return 429; }
+    });
+    var p = lib.page;
+
+    await p.waitForFunction(function () {
+      return /holding requests back/.test(document.getElementById('browse-note-text').textContent);
+    }, null, { timeout: 10000 });
+
+    // It used to send three more into the limit before stopping - on the
+    // key and connection the music needs - and then offer to push on.
+    await p.waitForTimeout(3000);
+    assert.strictEqual(lib.reads.refused.length, 1,
+      lib.reads.refused.length + ' tag reads sent into the rate limit');
+    assert.ok(await p.$eval('#browse-scan', function (b) { return b.hidden; }),
+      'offered to push on into a rate limit');
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('no tag read starts while a track is starting', async function () {
+    // A slow start, long enough that even the slower pace while playing
+    // would fit reads into it.
+    var lib = await openLibrary(browser, base, {
+      folder: BIG, files: BIG_FILES, id3: BIG_ID3, audioDelay: 6000
+    });
+    var p = lib.page;
+    await p.waitForFunction(function () {
+      return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+    }, null, { timeout: 10000 });
+
+    await p.click('#tracklist .track:nth-child(5)');
+    await p.waitForFunction(function () {
+      var a = document.getElementById('audio');
+      return !a.paused && a.currentTime > 0.1;
+    }, null, { timeout: 20000 });
+
+    var asked = lib.reads.audio[0];
+    var inside = lib.reads.times.filter(function (t) {
+      return t > asked.start + 100 && t < asked.end;
+    });
+    assert.strictEqual(inside.length, 0, inside.length + ' tag reads began while the track was starting');
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
   await step('scrolling the list reads the tags that come on screen, one at a time',
     async function () {
       var lib = await openLibrary(browser, base, {
@@ -1972,6 +2132,332 @@ async function main() {
       assert.deepStrictEqual(lib.errors, []);
       await lib.ctx.close();
     });
+
+  /* ---- reading tags only when asked ---- */
+
+  await step('left to itself, the player reads no tags, whatever is on screen or playing',
+    async function () {
+      var lib = await openLibrary(browser, base, {
+        folder: BIG, files: BIG_FILES, id3: BIG_ID3, settings: { autoTags: false }
+      });
+      var p = lib.page;
+      await p.waitForFunction(function () {
+        return document.querySelectorAll('#tracklist .track').length === 120;
+      });
+
+      // Rows on screen, a track playing and a scroll each set reads going, on
+      // the key and the connection the music needs.
+      await p.click('#tracklist .track:nth-child(2)');
+      await p.waitForFunction(function () {
+        var a = document.getElementById('audio');
+        return !a.paused && a.currentTime > 0.1;
+      }, null, { timeout: 10000 });
+      await p.evaluate(function () {
+        var main = document.querySelector('.main');
+        main.scrollTop = main.scrollHeight;
+      });
+      await p.waitForTimeout(1500);
+
+      await p.click('.tab[data-facet="album"]');
+      await p.waitForSelector('#browse-read:not([hidden])');
+      await p.waitForTimeout(1500);
+
+      assert.strictEqual(lib.reads.ids.length, 0, lib.reads.ids.length + ' tags read unasked');
+      assert.strictEqual(await p.textContent('#browse-read'), 'Start reading tags');
+      var note = await p.textContent('#browse-note-text');
+      assert.ok(/0 of 120 read so far/.test(note) && /switched off/.test(note), 'note: ' + note);
+
+      assert.deepStrictEqual(lib.errors, []);
+      await lib.ctx.close();
+    });
+
+  await step('Start reading tags reads the library, and Stop stops it', async function () {
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, readDelay: 300,
+      settings: { autoTags: false, facet: 'album' }
+    });
+    var p = lib.page;
+
+    await p.waitForSelector('#browse-read:not([hidden])');
+    await p.click('#browse-read');
+    await p.waitForFunction(function () {
+      return window.DrivePlayer.tracks().filter(function (t) { return t.tagged; }).length >= 2;
+    }, null, { timeout: 10000 });
+    assert.strictEqual(await p.textContent('#browse-read'), 'Stop reading');
+    await p.click('#browse-read');
+
+    // A read already under way finishes; nothing is asked for after it.
+    await p.waitForTimeout(1000);
+    var stopped = lib.reads.ids.length;
+    await p.waitForTimeout(2500);
+    assert.strictEqual(lib.reads.ids.length, stopped, 'reads went on after Stop');
+    assert.ok(stopped < 10, 'all ' + stopped + ' were read before Stop took hold');
+    assert.strictEqual(await p.textContent('#browse-read'), 'Start reading tags');
+
+    // Started again, it carries on through the rest and reads nothing twice.
+    await p.click('#browse-read');
+    await p.waitForFunction(function () {
+      return window.DrivePlayer.tracks().every(function (t) { return t.tagged; });
+    }, null, { timeout: 15000 });
+    assert.strictEqual(lib.reads.ids.length, 10, 'read: ' + lib.reads.ids.join(' '));
+    var names = await cardNames(p);
+    ['Split', 'Constructor', '__proto__'].forEach(function (n) {
+      assert.ok(names.indexOf(n) !== -1, n + ' missing: ' + names);
+    });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('reading tags automatically is a setting, and it sticks', async function () {
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { autoTags: false, facet: 'album' }
+    });
+    var p = lib.page;
+    await p.waitForSelector('#browse-read:not([hidden])');
+
+    await p.click('#btn-settings');
+    await p.waitForSelector('#setdlg:not([hidden])');
+    assert.strictEqual(await p.isChecked('#set-autotags'), false, 'shown as on when it was off');
+    await p.check('#set-autotags');
+    await p.click('#set-save');
+
+    // From the moment it is saved, rather than from the next visit.
+    await p.waitForFunction(function () {
+      return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent === 'Split'; });
+    }, null, { timeout: 15000 });
+
+    await p.reload();
+    await p.waitForSelector('#app:not([hidden])');
+    await p.click('#btn-settings');
+    await p.waitForSelector('#setdlg:not([hidden])');
+    assert.strictEqual(await p.isChecked('#set-autotags'), true, 'the setting was lost on reload');
+    await p.click('#set-cancel');
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  /* ---- each file's tags read once, and kept ---- */
+
+  await step('a song played before its tags were read still has them read', async function () {
+    // The allowance spent a minute ago, as part way through a big library,
+    // so nothing is read for now.
+    var spent = [];
+    for (var i = 0; i < 300; i++) spent.push(Date.now() - 60 * 1000);
+
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3,
+      storage: { 'drivePlayer.tagReads.v1': JSON.stringify(spent) }
+    });
+    var p = lib.page;
+
+    await p.click('#tracklist .track:nth-child(1)');
+    await p.waitForFunction(function () {
+      var t = window.DrivePlayer.player.nowPlaying();
+      return t && t.duration > 0;
+    }, null, { timeout: 10000 });
+    var played = await p.evaluate(function () { return window.DrivePlayer.player.nowPlaying().id; });
+
+    // Playing saves the track's length, and that used to pass for its tags
+    // having been read, from the next visit on.
+    await p.waitForTimeout(2000);
+    assert.strictEqual(lib.reads.ids.length, 0, 'read with the allowance spent');
+    await p.evaluate(function () {
+      document.getElementById('audio').pause();
+      localStorage.setItem('drivePlayer.tagReads.v1', '[]');
+    });
+    await p.reload();
+    await p.waitForSelector('#app:not([hidden])');
+
+    await p.waitForFunction(function (want) {
+      var t = window.DrivePlayer.tracks().filter(function (x) { return x.id === want.id; })[0];
+      return t && t.album === want.album;
+    }, { id: played, album: ODD_ID3[played].album }, { timeout: 15000 });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('an edit does not download the files with no tags again', async function () {
+    var lib = await openLibrary(browser, base, { folder: FOLDER, files: FILES, id3: ID3_FILES });
+    var p = lib.page;
+
+    // Every file read, and all but one of them found to have no tag.
+    var allRead = function () {
+      return p.waitForFunction(function () {
+        return window.DrivePlayer.tracks().every(function (t) { return t.tagged; });
+      }, null, { timeout: 15000 });
+    };
+    await allRead();
+
+    // A later visit, with the tags coming from the cache.
+    await p.reload();
+    await p.waitForSelector('#app:not([hidden])');
+    await allRead();
+    await p.waitForTimeout(1000);
+    var before = lib.reads.ids.length;
+
+    // An edit works every track out again, which put each file without a
+    // tag back among the unread, and each was downloaded again.
+    await importInto(p, { version: 2, artists: { 'Grouper': ['Ambient'] } });
+    await p.waitForTimeout(2500);
+
+    assert.strictEqual(lib.reads.ids.length, before,
+      'read again: ' + lib.reads.ids.slice(before).join(' '));
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('tags read just before a reload are not read again after it', async function () {
+    var lib = await openLibrary(browser, base, { folder: ODD, files: ODD_FILES, id3: ODD_ID3 });
+    var p = lib.page;
+
+    await p.waitForFunction(function () {
+      return window.DrivePlayer.tracks().every(function (t) { return t.tagged; });
+    }, null, { timeout: 15000 });
+
+    // Tags are written a moment after they are read, in a batch, and a
+    // batch still waiting when the page went away was lost.
+    await p.reload();
+    await p.waitForSelector('#app:not([hidden])');
+    await p.waitForTimeout(2500);
+
+    assert.strictEqual(lib.reads.ids.length, 10, 'read: ' + lib.reads.ids.join(' '));
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  /* ---- sorting out the Albums grid ---- */
+
+  await step('singles and tracks with no album can share one card', async function () {
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album', groupSingles: true }
+    });
+    var p = lib.page;
+
+    // Constructor and __proto__ are albums of one track each.
+    await p.waitForFunction(function () {
+      return window.DrivePlayer.tracks().every(function (t) { return t.tagged; });
+    }, null, { timeout: 15000 });
+    await p.waitForFunction(function () {
+      return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent === 'Singles'; });
+    });
+    var names = await cardNames(p);
+    assert.deepStrictEqual(names.slice().sort(),
+      ['Singles', 'Split', "Whatever People Say I Am, That's What I'm Not"], 'cards: ' + names);
+
+    await p.click('.card:has(.card-name:text-is("Singles"))');
+    await p.waitForSelector('#crumb:not([hidden])');
+    var titles = await p.$$eval('#tracklist .track-title', function (els) {
+      return els.map(function (e) { return e.textContent; });
+    });
+    assert.deepStrictEqual(titles.sort(), ['Build', 'Proto']);
+    await p.click('#crumb-back');
+
+    // Switched off, each is an album of its own again.
+    await p.click('#btn-settings');
+    await p.waitForSelector('#setdlg:not([hidden])');
+    assert.strictEqual(await p.isChecked('#set-singles'), true, 'shown as off when it was on');
+    await p.uncheck('#set-singles');
+    await p.click('#set-save');
+    await p.waitForFunction(function () {
+      var names = Array.prototype.map.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent; });
+      return names.indexOf('Constructor') !== -1 && names.indexOf('__proto__') !== -1 &&
+        names.indexOf('Singles') === -1;
+    }, null, { timeout: 10000 });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+
+    // Where tracks with no album at all are on it too, the card says so.
+    var lib2 = await openLibrary(browser, base, {
+      folder: FOLDER, files: FILES, id3: ID3_FILES, settings: { facet: 'album', groupSingles: true }
+    });
+    await lib2.page.waitForFunction(function () {
+      var card = document.querySelector('#browse .card');
+      return card && card.title === 'Singles — And tracks with no album' &&
+        card.querySelector('.card-count').textContent === '10 tracks';
+    }, null, { timeout: 15000 });
+    assert.deepStrictEqual(await cardNames(lib2.page), ['Singles']);
+
+    assert.deepStrictEqual(lib2.errors, []);
+    await lib2.ctx.close();
+  });
+
+  await step('an album export can be corrected and imported back', async function () {
+    // A download that put the playlist's name where each album goes.
+    var LIKED = 'liked-songs';
+    var files = {};
+    files[LIKED] = [
+      { id: 'l1', name: 'Arctic Monkeys - Mardy Bum.mp3', mimeType: 'audio/mpeg' },
+      { id: 'l2', name: 'Arctic Monkeys - Riot Van.mp3', mimeType: 'audio/mpeg' },
+      { id: 'l3', name: 'Tame Impala - Let It Happen.mp3', mimeType: 'audio/mpeg' },
+      { id: 'l4', name: 'Grouper - Heavy Water.mp3', mimeType: 'audio/mpeg' }   // no tag
+    ];
+    var id3 = {
+      l1: { title: 'Mardy Bum', artist: 'Arctic Monkeys', album: 'Liked Songs' },
+      l2: { title: 'Riot Van', artist: 'Arctic Monkeys', album: 'Liked Songs' },
+      l3: { title: 'Let It Happen', artist: 'Tame Impala', album: 'Liked Songs' }
+    };
+    var AM = "Whatever People Say I Am, That's What I'm Not";
+
+    var lib = await openLibrary(browser, base, {
+      folder: LIKED, files: files, id3: id3, settings: { facet: 'album' }
+    });
+    var p = lib.page;
+    await p.waitForFunction(function () {
+      return window.DrivePlayer.tracks().every(function (t) { return t.tagged; });
+    }, null, { timeout: 15000 });
+
+    var out = await exportFrom(p, 'set-albums');
+    assert.ok(out && Array.isArray(out.albums), 'no album export: ' + JSON.stringify(out));
+    assert.deepStrictEqual(out.albums.map(function (a) { return a.id + ' ' + a.album; }),
+      ['l1 Liked Songs', 'l2 Liked Songs', 'l3 Liked Songs', 'l4 '],
+      'not album by album with the albumless last');
+    assert.deepStrictEqual(out.albums[0], {
+      id: 'l1', file: 'Arctic Monkeys - Mardy Bum.mp3', artist: 'Arctic Monkeys',
+      title: 'Mardy Bum', album: 'Liked Songs'
+    });
+
+    // Filled in the way whoever fills it in would; the empty one stays put.
+    out.albums[0].album = AM;
+    out.albums[1].album = AM;
+    out.albums[2].album = 'Currents';
+    await importInto(p, out);
+
+    await p.waitForFunction(function () {
+      return /Imported 3 album changes/.test(document.getElementById('toast').textContent);
+    }, null, { timeout: 5000 });
+    await p.waitForFunction(function () {
+      return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent === 'Currents'; });
+    });
+    assert.deepStrictEqual((await cardNames(p)).sort(), ['Currents', 'No album', AM]);
+
+    // The file has neither artists nor tracks in it, and a file like that
+    // is otherwise taken for the oldest export: a bare map of genre edits.
+    var overrides = await p.evaluate(function () {
+      return localStorage.getItem('drivePlayer.genreOverrides.v1');
+    });
+    assert.ok(!overrides || overrides === '{}', 'taken for genre edits: ' + overrides);
+
+    await p.reload();
+    await p.waitForSelector('#browse:not([hidden])');
+    await p.waitForFunction(function () {
+      return Array.prototype.some.call(document.querySelectorAll('#browse .card-name'),
+        function (e) { return e.textContent === 'Currents'; });
+    }, null, { timeout: 10000 });
+    assert.deepStrictEqual((await cardNames(p)).sort(), ['Currents', 'No album', AM]);
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
 
   await browser.close();
   server.close();
