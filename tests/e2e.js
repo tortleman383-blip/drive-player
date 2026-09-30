@@ -206,12 +206,14 @@ function serve() {
 
 /* Opens the player in a fresh context against its own stubbed Drive, with
  * the key and folder already saved so it goes straight to the library. Tag
- * reads are answered after readDelay ms and counted, so a test can see
- * which files were read and whether two reads were ever in flight at once;
- * refuse(id), when given, picks the ones Drive turns away. */
+ * reads are answered after readDelay ms and counted, with when each began,
+ * so a test can see which files were read, how far apart, and whether two
+ * were ever in flight at once. refuse(id), when given, picks the ones Drive
+ * turns away - with a 403, or with whatever status it returns instead - and
+ * audioDelay holds back the audio itself, as a slow start does. */
 async function openLibrary(browser, base, lib) {
   var ctx = await browser.newContext();
-  var reads = { ids: [], refused: [], inFlight: 0, maxInFlight: 0 };
+  var reads = { ids: [], times: [], refused: [], inFlight: 0, maxInFlight: 0, audio: [] };
 
   await ctx.route(/googleapis\.com\/drive\/v3\/files/, function (route) {
     var request = route.request();
@@ -234,17 +236,24 @@ async function openLibrary(browser, base, lib) {
       if ((request.headers()['range'] || '').indexOf('bytes=0-262143') === 0) {
         var meta = lib.id3[id];
 
-        if (lib.refuse && lib.refuse(id)) {
+        var refusal = lib.refuse && lib.refuse(id);
+        if (refusal) {
+          var status = refusal === true ? 403 : refusal;
           reads.refused.push(id);
           return route.fulfill({
-            status: 403,
+            status: status,
             contentType: 'application/json',
             headers: { 'Access-Control-Allow-Origin': '*' },
-            body: JSON.stringify({ error: { code: 403, message: 'nope' } })
+            body: JSON.stringify({ error: {
+              code: status,
+              message: status === 429 ? 'Rate Limit Exceeded' : 'nope',
+              errors: [{ reason: status === 429 ? 'rateLimitExceeded' : 'forbidden' }]
+            } })
           });
         }
 
         reads.ids.push(id);
+        reads.times.push(Date.now());
         reads.inFlight++;
         reads.maxInFlight = Math.max(reads.maxInFlight, reads.inFlight);
 
@@ -259,15 +268,22 @@ async function openLibrary(browser, base, lib) {
           });
       }
 
-      return route.fulfill({
-        status: 200,
-        headers: {
-          'Content-Type': 'audio/wav',
-          'Accept-Ranges': 'bytes',
-          'Access-Control-Allow-Origin': '*'
-        },
-        body: AUDIO
-      });
+      var asked = { id: id, start: Date.now(), end: 0 };
+      reads.audio.push(asked);
+
+      return new Promise(function (done) { setTimeout(done, lib.audioDelay || 0); })
+        .then(function () {
+          asked.end = Date.now();
+          return route.fulfill({
+            status: 200,
+            headers: {
+              'Content-Type': 'audio/wav',
+              'Accept-Ranges': 'bytes',
+              'Access-Control-Allow-Origin': '*'
+            },
+            body: AUDIO
+          });
+        });
     }
 
     var m = (url.searchParams.get('q') || '').match(/"([^"]+)" in parents/);
@@ -1821,6 +1837,86 @@ async function main() {
         function (e) { return e.textContent; });
       return names.indexOf('Constructor') !== -1 && names.indexOf('__proto__') !== -1;
     }, null, { timeout: 15000 });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  /* ---- tag reads and playback share a key and a connection ---- */
+
+  await step('while music plays, tag reads slow down to leave it room', async function () {
+    var lib = await openLibrary(browser, base, { folder: BIG, files: BIG_FILES, id3: BIG_ID3 });
+    var p = lib.page;
+    await p.waitForFunction(function () {
+      return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+    }, null, { timeout: 10000 });
+
+    await p.click('#tracklist .track:nth-child(2)');
+    await p.waitForFunction(function () {
+      var a = document.getElementById('audio');
+      return !a.paused && a.currentTime > 0.1;
+    }, null, { timeout: 10000 });
+
+    // Each read is a 256 KB download on the key and connection the music is
+    // using. They used to keep coming every few hundred milliseconds, which
+    // is how reading album tags could get the music rate-limited.
+    var from = Date.now();
+    await p.waitForTimeout(9000);
+    var during = lib.reads.times.filter(function (t) { return t >= from; });
+    assert.ok(during.length <= 4, during.length + ' tag reads in 9s of playback');
+    during.slice(1).forEach(function (t, i) {
+      assert.ok(t - during[i] >= 2500, 'tag reads ' + (t - during[i]) + 'ms apart while playing');
+    });
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('a tag read refused for its rate stops the reading at once', async function () {
+    var lib = await openLibrary(browser, base, {
+      folder: ODD, files: ODD_FILES, id3: ODD_ID3, settings: { facet: 'album' },
+      refuse: function () { return 429; }
+    });
+    var p = lib.page;
+
+    await p.waitForFunction(function () {
+      return /holding requests back/.test(document.getElementById('browse-note-text').textContent);
+    }, null, { timeout: 10000 });
+
+    // It used to send three more into the limit before stopping - on the
+    // key and connection the music needs - and then offer to push on.
+    await p.waitForTimeout(3000);
+    assert.strictEqual(lib.reads.refused.length, 1,
+      lib.reads.refused.length + ' tag reads sent into the rate limit');
+    assert.ok(await p.$eval('#browse-scan', function (b) { return b.hidden; }),
+      'offered to push on into a rate limit');
+
+    assert.deepStrictEqual(lib.errors, []);
+    await lib.ctx.close();
+  });
+
+  await step('no tag read starts while a track is starting', async function () {
+    // A slow start, long enough that even the slower pace while playing
+    // would fit reads into it.
+    var lib = await openLibrary(browser, base, {
+      folder: BIG, files: BIG_FILES, id3: BIG_ID3, audioDelay: 6000
+    });
+    var p = lib.page;
+    await p.waitForFunction(function () {
+      return document.querySelector('#tracklist .track-artist').textContent === 'Band 000';
+    }, null, { timeout: 10000 });
+
+    await p.click('#tracklist .track:nth-child(5)');
+    await p.waitForFunction(function () {
+      var a = document.getElementById('audio');
+      return !a.paused && a.currentTime > 0.1;
+    }, null, { timeout: 20000 });
+
+    var asked = lib.reads.audio[0];
+    var inside = lib.reads.times.filter(function (t) {
+      return t > asked.start + 100 && t < asked.end;
+    });
+    assert.strictEqual(inside.length, 0, inside.length + ' tag reads began while the track was starting');
 
     assert.deepStrictEqual(lib.errors, []);
     await lib.ctx.close();

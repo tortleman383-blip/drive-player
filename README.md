@@ -291,6 +291,15 @@ Lock-screen and headset buttons work too, via the Media Session API.
   Albums grid skips the rest on request: it starts a fresh 300 at once,
   still one read at a time and still stopping if Drive refuses a run of them,
   so each further 300 takes another click rather than happening unasked.
+
+  Tag reads and playback ask the same Drive endpoint with the same key over
+  the same connection, so a rate limit that reading sets off stops the music
+  too. Reading therefore gives way to it: a read every three seconds or so
+  while music plays rather than several a second, none at all while a track
+  is starting, and at the first read Google refuses for its rate — or the
+  first track it will not serve — reading stops outright for a minute,
+  doubling each time that happens again, and stays at the slower pace for
+  the rest of the visit. The line over the Albums grid says when.
 - **Artwork** costs no requests of its own. The tag pass already downloads the
   first 256 KB of a file, and an embedded cover is usually sitting in it, so
   the picture is taken from bytes already in hand, shrunk to 128px, and kept
@@ -313,7 +322,7 @@ Lock-screen and headset buttons work too, via the Media Session API.
 Listing the folder and downloading from it are two different permissions, so
 seeing your tracks appear proves less than it looks. If every track skips, the
 player probes Drive directly and puts the real reason in the bar above the
-list rather than leaving you with "could not play". The three answers it gives:
+list rather than leaving you with "could not play". The answers it gives:
 
 - **"Drive refused the download (403)"** — the key can list but not fetch.
   Almost always an *Application restriction* on the key: `Credentials → your
@@ -322,6 +331,9 @@ list rather than leaving you with "could not play". The three answers it gives:
 - **"This browser cannot decode them"** — Drive served the bytes and the file
   is simply in a format the browser will not play. WMA, ALAC, and AIFF do
   this; MP3, M4A/AAC, FLAC, OGG, Opus and WAV are all fine.
+- **"Google is rate-limiting requests"** — too much was asked too quickly,
+  from this key or this connection. It clears by itself within a few
+  minutes; reading album tags pauses meanwhile so it can.
 - **"The request never reached Drive"** — a network filter, an extension, or
   no connection.
 
@@ -332,8 +344,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 63 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 64 tests in a real browser
+node tests/units.js                      # 65 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 67 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,

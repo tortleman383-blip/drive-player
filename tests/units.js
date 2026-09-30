@@ -714,6 +714,66 @@ test('probe reports a request that never reached Drive', function () {
   });
 });
 
+test('a tag read tells Google holding traffic back apart from a refused file', function () {
+  // Playback asks the same endpoint with the same key, so a rate limit is
+  // its problem too; a file refused on its own merits is not.
+  function answer(status, reason) {
+    return function () {
+      if (status === 0) return Promise.reject(new Error('Failed to fetch'));
+      return Promise.resolve({
+        ok: false,
+        status: status,
+        text: function () {
+          return Promise.resolve(JSON.stringify({ error: { errors: [{ reason: reason }] } }));
+        }
+      });
+    };
+  }
+
+  var cases = [
+    [429, 'rateLimitExceeded', true],
+    [403, 'userRateLimitExceeded', true],
+    [403, 'rateLimitExceeded', true],
+    [503, 'backendError', true],
+    [0, '', true],                 // no answer at all: a blocked network looks like this
+    [403, 'forbidden', false],
+    [403, 'downloadQuotaExceeded', false],
+    [404, 'notFound', false]
+  ];
+
+  return cases.reduce(function (chain, c) {
+    return chain.then(function () {
+      ctx.fetch = answer(c[0], c[1]);
+      return Drive.fetchTagBytes('id', 'key').then(function (r) {
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(r.throttled, c[2], c[0] + ' ' + c[1]);
+      });
+    });
+  }, Promise.resolve());
+});
+
+test('a rate-limited download is not blamed on the key', function () {
+  // A 403 for a rate limit used to get the "application restriction on the
+  // key" explanation, sending people off to change settings that were fine.
+  ctx.fetch = function () {
+    return Promise.resolve({
+      ok: false,
+      status: 403,
+      text: function () {
+        return Promise.resolve(JSON.stringify({
+          error: { message: 'User Rate Limit Exceeded', errors: [{ reason: 'userRateLimitExceeded' }] }
+        }));
+      }
+    });
+  };
+
+  return Drive.probe('id', 'key').then(function (r) {
+    assert.strictEqual(r.throttled, true);
+    assert.ok(/rate-limiting/.test(r.message), r.message);
+    assert.ok(!/restriction/.test(r.message), r.message);
+  });
+});
+
 test('probe is happy when Drive serves the bytes', function () {
   ctx.fetch = function () { return Promise.resolve({ ok: true, status: 206 }); };
   return Drive.probe('id', 'key').then(function (r) {

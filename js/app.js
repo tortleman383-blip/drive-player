@@ -250,7 +250,8 @@
   var enrichQueue = [];
   var enrichQueued = {};         // queued, or already tried, since the last listing
   var enrichBusy = false;        // a read, or the gap after one, is under way
-  var ENRICH_GAP_MS = 400;
+  var ENRICH_GAP_MS = 400;       // between reads while nothing is playing
+  var ENRICH_PLAYING_GAP_MS = 3000;  // while something is: see enrichAfter
   var ENRICH_WINDOW = 60;        // how many rows down from the top of the screen
   var ENRICH_BUDGET = 300;       // reads in any ENRICH_SPAN_MS, counted across reloads
   var ENRICH_SPAN_MS = 15 * 60 * 1000;
@@ -261,6 +262,12 @@
   var restTimer = null;
   var scanFrom = 0;              // Scan now: reads before this do not count
   var scanAll = false;           // Scan now: the whole library, not just the screen
+  var HOLD_MS = [60000, 120000, 240000, 480000, 900000];
+  var enrichHeldUntil = 0;       // Google is holding traffic back
+  var holdStep = 0;              // holds since the last read that got through
+  var holdTimer = null;
+  var pushedBack = false;        // Google has held traffic back this page load
+  var trackStartedAt = 0;        // a track has been asked for and is not playing yet
   var redrawTimer = null;
 
   /* A redraw swaps every row for a new element, and a click whose press
@@ -398,8 +405,53 @@
     }, wait + 1000);
   }
 
+  /* Tag reads and playback ask the same Drive endpoint with the same key
+   * over the same connection, so when Google holds traffic back it holds
+   * back the music too. At the first sign of it - a read refused for its
+   * rate, or a track that could not be fetched - stop reading tags rather
+   * than send more into the limit, and wait longer each time it happens
+   * again before a read gets through. Music comes first. */
+  function holdEnrich() {
+    if (enrichHeldUntil > Date.now()) return;     // already holding
+
+    var wait = HOLD_MS[Math.min(holdStep, HOLD_MS.length - 1)];
+    holdStep++;
+    pushedBack = true;
+    enrichHeldUntil = Date.now() + wait;
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(function () {
+      holdTimer = null;
+      enrichHeldUntil = 0;
+      enrichVisible();
+      renderBrowseNote();
+    }, wait);
+    renderBrowseNote();
+  }
+
+  /* The next read, after a gap: a short one while nothing is playing, and
+   * a long one while something is, since each read is a 256 KB download on
+   * the connection and key the music needs - or once Google has pushed back
+   * at all, since going straight back to the pace that set it off would
+   * only set it off again. */
+  function enrichAfter(ms) {
+    enrichBusy = true;
+    setTimeout(function () {
+      enrichBusy = false;
+      if (enrichQueue.length) enrichNext();
+      else scheduleRedraw();   // this screen is done; the redraw looks again
+    }, ms);
+  }
+
   function enrichNext() {
-    if (!enrichQueue.length) return;
+    if (!enrichQueue.length || enrichHeldUntil > Date.now()) return;
+
+    // A track has been asked for and is not playing yet: give it the
+    // connection to itself. Capped, so a load that never finishes cannot
+    // stop the reading for good.
+    if (trackStartedAt && Date.now() - trackStartedAt < 15000) {
+      enrichAfter(500);
+      return;
+    }
 
     var wait = budgetWait();
     if (wait > 0) { restEnrich(wait); return; }
@@ -410,6 +462,13 @@
     Store.noteRead(now, now - ENRICH_SPAN_MS);
 
     Drive.fetchTagBytes(track.id, settings.apiKey).then(function (result) {
+      if (!result.ok && result.throttled) {
+        // Nothing to do with this file, which gets another go after the hold.
+        delete enrichQueued[track.id];
+        holdEnrich();
+        return;
+      }
+
       if (!result.ok) {
         // Drive would not hand over the bytes. Leave the track untagged so
         // the next load tries again, rather than recording a verdict we did
@@ -428,6 +487,7 @@
       }
 
       enrichFailures = 0;
+      holdStep = 0;
 
       var meta = result.buffer ? ID3.parse(result.buffer) : null;
       if (meta) {
@@ -458,18 +518,21 @@
       /* leave it on the filename guess */
     }).then(function () {
       renderBrowseNote();
-      if (enrichStopped) { enrichBusy = false; return; }
+      if (enrichStopped || enrichHeldUntil > Date.now()) { enrichBusy = false; return; }
 
       // Only the end of this gap starts the next read. Starting one whenever
       // the view changed - as it used to, if that fell inside a gap - ran a
       // second chain of reads alongside the first.
-      setTimeout(function () {
-        enrichBusy = false;
-        if (enrichQueue.length) enrichNext();
-        else scheduleRedraw();   // this screen is done; the redraw looks again
-      }, ENRICH_GAP_MS);
+      enrichAfter(els.audio.paused && !pushedBack ? ENRICH_GAP_MS : ENRICH_PLAYING_GAP_MS);
     });
   }
+
+  // From a track being asked for until it plays (or fails), no tag read
+  // starts: that is when one would compete with it hardest.
+  els.audio.addEventListener('loadstart', function () { trackStartedAt = Date.now(); });
+  ['canplay', 'playing', 'error'].forEach(function (type) {
+    els.audio.addEventListener(type, function () { trackStartedAt = 0; });
+  });
 
   /* ---------- artwork ----------
    * Pulled on demand for the track being played, with a small cache, so a
@@ -796,6 +859,10 @@
         if (enrichStopped) {
           note += ' Stopped, as Drive refused the last few.';
           action = 'Try again';
+        } else if (enrichHeldUntil > Date.now()) {
+          // No button: going ahead would only take the music down with it.
+          note += ' Google is holding requests back right now, so reading has ' +
+            'paused until ' + clockTime(enrichHeldUntil) + ' to leave room for the music.';
         } else if (enrichRestingUntil) {
           note += ' Resting until ' + clockTime(enrichRestingUntil) + ' so Google ' +
             'does not take this for automated traffic, then carrying on by itself.';
@@ -1776,12 +1843,20 @@
       if (!result.ok) {
         var dead = tracks.filter(function (t) { return t.dead; }).length;
 
+        // The music could not get through, so the tag reads that share its
+        // key and connection stop competing with it.
+        var held = '';
+        if (result.throttled) {
+          holdEnrich();
+          held = ' Reading album tags has paused meanwhile, to leave room for the music.';
+        }
+
         if (result.network && dead > 2) {
           setStatus(result.message + ' Every track has failed the same way, ' +
             'which points at the key rather than any one file — check the ' +
-            'Drive API quota for its project.', true);
+            'Drive API quota for its project.' + held, true);
         } else {
-          setStatus(result.message, true);
+          setStatus(result.message + held, true);
         }
         return;
       }
@@ -1816,10 +1891,18 @@
   });
 
   // A track that plays clears the diagnosis, so a single bad file does not
-  // leave a permanent banner.
+  // leave a permanent banner - and is plainly not dead, whatever a rate
+  // limit made it look like earlier.
   els.audio.addEventListener('playing', function () {
     diagnosed = false;
     if (els.status.classList.contains('error')) setStatus('');
+
+    var track = player.nowPlaying();
+    if (track && track.dead) {
+      track.dead = false;
+      var row = els.list.querySelector('[data-track-id="' + track.id + '"]');
+      if (row) row.classList.remove('dead');
+    }
   });
 
   /* ---------- boot ---------- */
