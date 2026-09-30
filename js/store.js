@@ -32,7 +32,11 @@
     shuffle: false,
     repeat: 'all',   // 'off' | 'all' | 'one'
     genre: 'All',
-    facet: 'genre'   // genre | artist | album
+    facet: 'genre',  // genre | artist | album
+    // Reading tags downloads the start of every file, on the key and the
+    // connection the music needs, so it waits to be started unless this is on.
+    autoTags: false,
+    groupSingles: true   // albums of one track share a card with No album
   };
 
   function read(key, fallback) {
@@ -110,14 +114,21 @@
   var cacheTimer = null;
   function scheduleCacheWrite() {
     if (cacheTimer) return;
-    cacheTimer = setTimeout(function () {
-      cacheTimer = null;
-      if (!write(KEYS.cache, getCache())) {
-        // Out of room: drop the cache rather than wedge on every write.
-        cache = {};
-        try { localStorage.removeItem(KEYS.cache); } catch (e) {}
-      }
-    }, 1500);
+    cacheTimer = setTimeout(flushCache, 1500);
+  }
+
+  /* Writes out whatever is waiting now. The page calls this as it goes away:
+   * a batch still waiting then was lost, and every tag in it was downloaded
+   * again on the next visit. */
+  function flushCache() {
+    if (!cacheTimer) return;
+    clearTimeout(cacheTimer);
+    cacheTimer = null;
+    if (!write(KEYS.cache, getCache())) {
+      // Out of room: drop the cache rather than wedge on every write.
+      cache = {};
+      try { localStorage.removeItem(KEYS.cache); } catch (e) {}
+    }
   }
 
   function clearCache() {
@@ -272,6 +283,19 @@
     write(KEYS.details, all);
   }
 
+  /* Albums for many tracks at once, as [{ track, album }], written once: an
+   * imported album list can cover the whole library. An artist corrected by
+   * hand stays as it was. */
+  function setAlbums(list) {
+    var all = getDetails();
+    (list || []).forEach(function (item) {
+      var key = 'id:' + item.track.id;
+      var detail = all[key] || {};
+      all[key] = { artist: detail.artist || '', album: item.album };
+    });
+    write(KEYS.details, all);
+  }
+
   /* The same, applied to a whole Drive folder - which is how a soundtrack or
    * an album that arrived as loose files gets pulled back together. */
   function folderKey(folder) {
@@ -413,6 +437,7 @@
     replacePlaylists: replacePlaylists,
     getDetail: getDetail,
     setDetail: setDetail,
+    setAlbums: setAlbums,
     getDetails: getDetails,
     getFolderRule: getFolderRule,
     setFolderRule: setFolderRule,
@@ -424,6 +449,7 @@
     saveSettings: saveSettings,
     cacheGet: cacheGet,
     cacheSet: cacheSet,
+    flushCache: flushCache,
     clearCache: clearCache,
     getOverrides: getOverrides,
     getOverride: getOverride,

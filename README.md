@@ -92,17 +92,25 @@ Four tabs above the list:
 
 - **Genres** — the chip bar, filtering the whole library by tag.
 - **Artists** — every artist with a track count, most-played-by-you first.
-- **Albums** — the same for albums, read from ID3. Tracks with no album
-  information are grouped under *No album* rather than hidden, and an album
-  credited to several artists shows as *Various artists*. An album's name
-  only exists in its tags, so while this grid is showing it reads its way
-  through the tracks still waiting for one, and fills in as it goes; a line
-  above it says how far that has got, and whether reading is resting or has
-  been refused by Drive. **Scan now** there goes ahead without waiting out a
-  rest, and **Try again** retries what Drive refused. One record spelled
-  differently by different rips — curly apostrophes or straight, a comma or
-  none, a `(Bonus Track Version)` or `- Deluxe Edition` on some tracks — is
-  still one album; hover a card to see a name too long to fit.
+- **Albums** — the same for albums, read from ID3. An album's name only
+  exists in its tags, and reading them waits until you ask, since every read
+  is a download on the connection the music needs (see *How it holds up*): a
+  line above the grid says how many have been read, and **Start reading
+  tags** there works through the rest of the library, filling the grid in as
+  it goes, until **Stop reading**. With **Settings → Read album tags
+  automatically** on, it reads by itself instead, as tracks come on screen
+  and through this grid. The same line says whether reading is resting or has
+  been refused by Drive; **Scan now** goes ahead without waiting out a rest,
+  and **Try again** retries what Drive refused.
+
+  Albums you have only one track of share a single *Singles* card with the
+  tracks that have no album at all, rather than a card each; turn **Settings →
+  Put singles and tracks with no album on one card** off and each gets its
+  own, with the albumless under *No album*. An album credited to several
+  artists shows as *Various artists*. One record spelled differently by
+  different rips — curly apostrophes or straight, a comma or none, a `(Bonus
+  Track Version)` or `- Deluxe Edition` on some tracks — is still one album;
+  hover a card to see a name too long to fit.
 - **Playlists** — lists you built by hand (see above).
 
 Picking an artist or album filters the list to it; **Back** returns to the
@@ -176,6 +184,30 @@ Only fields you actually edit are pushed folder-wide. The artist box opens
 pre-filled, and applying it untouched would rename every other artist in the
 folder to whichever track you happened to click.
 
+### Fixing albums in bulk
+
+Some downloaders write the playlist's name where the album goes, which files
+a whole playlist — *Liked Songs*, say — under one album. **Settings → Export
+albums** writes every track with the album it is filed under, album by album
+and the albumless last:
+
+```json
+{
+  "version": 2,
+  "albums": [
+    { "id": "1AbC…", "file": "Arctic Monkeys - Mardy Bum.mp3",
+      "artist": "Arctic Monkeys", "title": "Mardy Bum", "album": "Liked Songs" }
+  ]
+}
+```
+
+Change the `album` of anything filed wrongly and **Settings → Import a file**
+applies it, as though typed into that track's editor. Only an album that
+differs from the export is applied and an empty one is ignored, so the rest
+of the file can stay as it is. Tracks are matched by Drive file id, which a
+rename does not change. A track whose tags have not been read yet shows no
+album in the export even if its tags name one, so read them first.
+
 ### Fixing a tag
 
 Click any genre chip on a track to open the editor, toggle tags, and add your
@@ -230,7 +262,7 @@ choose from:
 }
 ```
 
-Fill in the lists — `["Indie", "Synth"]` — and **Settings → Import genres**
+Fill in the lists — `["Indie", "Synth"]` — and **Settings → Import a file**
 puts them to work. Artist rules merge on import, so a file covering part of
 the library never wipes what is already there, and names are matched loosely
 (case, punctuation and a leading `the` do not matter).
@@ -272,13 +304,21 @@ Lock-screen and headset buttons work too, via the Media Session API.
   parsing the ID3 tag out of it, then cached in `localStorage` keyed by Drive's
   `modifiedTime`. A file is only recorded as having no tag when Drive actually
   served its bytes — a refused request is left untagged so the next load tries
-  again, rather than writing down a verdict that was never reached.
+  again, rather than writing down a verdict that was never reached. And each
+  file is read once: playing a track caches its length in the same place,
+  which no longer passes for its tags having been read; an edit does not send
+  the files without a tag back to be read again; and what was just read is
+  written out as the page closes, rather than lost with it.
 
-  Reading is deliberately slow and deliberately partial: one request at a
-  time, spaced, only for tracks on screen or playing, and no more than 300 in
-  any fifteen minutes. "On screen" means the rows you have scrolled to, or on
-  the Albums grid the tracks still waiting for an album; reads queued for a
-  screen you have since moved on from are dropped, not made. A tag read costs
+  Reading waits to be asked for — **Start reading tags** over the Albums
+  grid, or **Read album tags automatically** in Settings — and is
+  deliberately slow: one request at a time, spaced, and no more than 300 in
+  any fifteen minutes. Started from the Albums grid, it works through the
+  whole library, what is on screen first. Automatic reading is partial too:
+  only tracks on screen or playing, where "on screen" means the rows you have
+  scrolled to, or on the Albums grid the tracks still waiting for an album,
+  and reads queued for a screen you have since moved on from are dropped, not
+  made. A tag read costs
   a request per file, so doing a whole library at once is a burst of hundreds
   of requests to googleapis — enough for Google to decide the network is
   sending automated queries and block it outright, which takes playback down
@@ -344,8 +384,8 @@ it to the file it points at.
 ## Tests
 
 ```
-node tests/units.js                      # 65 tests, no dependencies
-npm i playwright && node tests/e2e.js    # 67 tests in a real browser
+node tests/units.js                      # 66 tests, no dependencies
+npm i playwright && node tests/e2e.js    # 75 tests in a real browser
 ```
 
 `units.js` covers ID3 parsing (including numeric genres, embedded artwork,
@@ -355,6 +395,10 @@ extraction and genre inference.
 `e2e.js` runs the actual page in Chromium against a stubbed Drive API and
 checks the whole path: setup validation, listing with subfolders, ID3
 overriding the filename guess, the genre bar, filtering, search, playback,
-seeking, next/previous, shuffle, tag editing, persistence across a reload, and
-recovery from an unplayable file. It uses the browser already installed at
-`/opt/pw-browsers/chromium` when there is one, otherwise Playwright's own.
+seeking, next/previous, shuffle, tag editing, persistence across a reload,
+recovery from an unplayable file, and how tag reading is paced, started,
+stopped and kept, alongside the Albums grid it fills. Most of it runs with
+automatic reading on and every album on its own card, since that is what it is
+testing; the defaults have steps of their own. It uses the browser already
+installed at `/opt/pw-browsers/chromium` when there is one, otherwise
+Playwright's own.

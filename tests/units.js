@@ -566,6 +566,31 @@ test('every setting the player saves is declared, so none is dropped on read',
     });
   });
 
+test('tags waiting to be written are written at once when the page goes', function () {
+  // Tags read are written a moment later, in a batch. One still waiting when
+  // the page went away was lost, and each tag in it downloaded again next
+  // visit; the page now asks for it to be written as it goes.
+  var saved = {};
+  var box = {
+    window: {}, console: console, setTimeout: setTimeout, clearTimeout: clearTimeout,
+    localStorage: {
+      getItem: function (k) { return k in saved ? saved[k] : null; },
+      setItem: function (k, v) { saved[k] = v; },
+      removeItem: function (k) { delete saved[k]; }
+    }
+  };
+  vm.runInContext(fs.readFileSync(path.join(JS, 'store.js'), 'utf8'),
+    vm.createContext(box), { filename: 'store.js' });
+  var store = box.window.Store;
+
+  store.cacheSet('f1', { modifiedTime: 't1', art: false, meta: null });
+  assert.strictEqual(saved['drivePlayer.metaCache.v1'], undefined, 'written before it was due');
+
+  store.flushCache();
+  assert.deepStrictEqual(JSON.parse(saved['drivePlayer.metaCache.v1']),
+    { f1: { modifiedTime: 't1', art: false, meta: null } });
+});
+
 /* ---------- filename junk ---------- */
 
 test('site stamps left by rippers are removed, bracketed or not', function () {

@@ -17,6 +17,7 @@
     tabs: document.querySelectorAll('.tab'),
     browse: $('browse'), browseNote: $('browse-note'),
     browseNoteText: $('browse-note-text'), browseScan: $('browse-scan'),
+    browseRead: $('browse-read'),
     crumb: $('crumb'), crumbBack: $('crumb-back'),
     crumbLabel: $('crumb-label'), crumbCount: $('crumb-count'),
     settings: $('btn-settings'), genres: $('genres'), status: $('status'),
@@ -39,7 +40,8 @@
     setdlg: $('setdlg'), setFolder: $('set-folder'), setKey: $('set-key'),
     setSave: $('set-save'), setCancel: $('set-cancel'), setExport: $('set-export'),
     setImport: $('set-import'), setFile: $('set-file'), setClearCache: $('set-clearcache'),
-    setUntagged: $('set-untagged'), setLookup: $('set-lookup'),
+    setUntagged: $('set-untagged'), setLookup: $('set-lookup'), setAlbums: $('set-albums'),
+    setAutoTags: $('set-autotags'), setSingles: $('set-singles'),
     toast: $('toast'), audio: $('audio'),
     queueBtn: $('btn-queue'), queueBadge: $('queue-badge'),
     queueDlg: $('queuedlg'), queueList: $('queue-list'), queueSub: $('queue-sub'),
@@ -132,7 +134,6 @@
 
     track.album = detail.album || folderRule.album || (meta && meta.album) || '';
     track.id3Genre = (meta && meta.genre) || '';
-    track.tagged = !!meta;
 
     var override = Store.getOverride(track);
     var artistRule = Store.getArtistRule(track.artist);
@@ -143,6 +144,14 @@
     track.custom = !!(override || artistRule);
     track.haystack = [track.title, track.artist, track.album, track.fileName]
       .join(' ').toLowerCase();
+  }
+
+  /* Whether the tag pass has looked at a file, going by its cache entry: it
+   * always writes meta, null for a file with no tag. Playing a track writes
+   * its duration to the same entry, and a track played before its tags were
+   * read used to count as read from then on - and was never read at all. */
+  function tagsRead(cached) {
+    return !!cached && cached.meta !== undefined;
   }
 
   function buildTrack(file) {
@@ -160,7 +169,7 @@
 
     var cached = Store.cacheGet(file.id, file.modifiedTime);
     applyMetadata(track, cached ? cached.meta : null);
-    if (cached) track.tagged = true;   // already inspected; do not re-fetch
+    track.tagged = tagsRead(cached);   // already inspected; do not re-fetch
     if (cached && cached.duration) track.duration = cached.duration;
     track.cachedArt = cached ? !!cached.art : false;
 
@@ -262,6 +271,9 @@
   var restTimer = null;
   var scanFrom = 0;              // Scan now: reads before this do not count
   var scanAll = false;           // Scan now: the whole library, not just the screen
+  // Whether to read tags at all this visit: from the start if they are read
+  // automatically, otherwise from Start reading tags until Stop.
+  var reading = !!settings.autoTags;
   var HOLD_MS = [60000, 120000, 240000, 480000, 900000];
   var enrichHeldUntil = 0;       // Google is holding traffic back
   var holdStep = 0;              // holds since the last read that got through
@@ -345,17 +357,43 @@
     enrichQueue.forEach(function (t) { delete enrichQueued[t.id]; });
     enrichQueue = [];
 
-    // After Scan now, the rest of the library follows what is on screen.
-    var wanted = [player.nowPlaying()].concat(onScreen());
-    if (scanAll) wanted = wanted.concat(untried(''));
+    // Switched off, nothing is read: not what is on screen, nor what plays.
+    if (reading) {
+      // After Scan now, the rest of the library follows what is on screen.
+      var wanted = [player.nowPlaying()].concat(onScreen());
+      if (scanAll) wanted = wanted.concat(untried(''));
 
-    wanted.forEach(function (t) {
-      if (!t || t.tagged || enrichQueued[t.id]) return;
-      enrichQueued[t.id] = true;
-      enrichQueue.push(t);
-    });
+      wanted.forEach(function (t) {
+        if (!t || t.tagged || enrichQueued[t.id]) return;
+        enrichQueued[t.id] = true;
+        enrichQueue.push(t);
+      });
 
-    if (!enrichBusy) enrichNext();
+      if (!enrichBusy) enrichNext();
+    }
+    renderBrowseNote();
+  }
+
+  /* Start reading tags, from the note over the Albums grid: the whole
+   * library, what is on screen first, at the pace and within the allowance
+   * reading automatically would keep to. It also goes back to whatever Drive
+   * refused last time. */
+  function startReading() {
+    reading = true;
+    scanAll = true;
+    enrichStopped = false;
+    enrichFailures = 0;
+    enrichRefused = {};
+    enrichQueued = {};
+    enrichVisible();
+  }
+
+  /* Nothing more is asked of Drive; a read already under way finishes. */
+  function stopReading() {
+    reading = false;
+    scanAll = false;
+    enrichQueue.forEach(function (t) { delete enrichQueued[t.id]; });
+    enrichQueue = [];
     renderBrowseNote();
   }
 
@@ -367,6 +405,7 @@
    * takes another click. */
   function scanNow() {
     if (restTimer) { clearTimeout(restTimer); restTimer = null; }
+    reading = true;
     enrichRestingUntil = 0;
     enrichStopped = false;
     enrichFailures = 0;
@@ -443,6 +482,9 @@
   }
 
   function enrichNext() {
+    // Queued again while a read of it was still under way - a Stop, then a
+    // Start - and read by that one since.
+    while (enrichQueue.length && enrichQueue[0].tagged) enrichQueue.shift();
     if (!enrichQueue.length || enrichHeldUntil > Date.now()) return;
 
     // A track has been asked for and is not playing yet: give it the
@@ -492,6 +534,7 @@
       var meta = result.buffer ? ID3.parse(result.buffer) : null;
       if (meta) {
         applyMetadata(track, meta);
+        track.tagged = true;
         Store.cacheSet(track.id, {
           modifiedTime: track.modifiedTime,
           art: !!meta.picture,
@@ -534,6 +577,13 @@
     els.audio.addEventListener(type, function () { trackStartedAt = 0; });
   });
 
+  // Tags just read wait a moment to be written; a reload or a closed tab
+  // must not take them along.
+  global.addEventListener('pagehide', Store.flushCache);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') Store.flushCache();
+  });
+
   /* ---------- artwork ----------
    * Pulled on demand for the track being played, with a small cache, so a
    * big library does not sit on a pile of decoded images. */
@@ -567,6 +617,9 @@
   /* ---------- filtering ---------- */
 
   var NO_ALBUM = '\u0000none';   // sorts nowhere near a real album name
+  // With singles grouped, the one card for albums of a single track and for
+  // tracks with no album at all.
+  var LOOSE = NO_ALBUM + ' and singles';
 
   // A trailing note on which edition this is: "(Deluxe Edition)", "[Bonus
   // Track Version]", "(2016 Remaster)".
@@ -600,17 +653,36 @@
     return key || track.album.toLowerCase().trim();
   }
 
+  /* How many tracks each album holds, by albumKey. */
+  function countAlbums() {
+    var counts = Object.create(null);
+    tracks.forEach(function (t) {
+      var key = albumKey(t);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return counts;
+  }
+
+  /* The card a track sits on in the Albums grid: its album's - or, given
+   * counts because singles are grouped, the shared card when its album holds
+   * just the one track or it has none. */
+  function cardKey(track, counts) {
+    var key = albumKey(track);
+    if (counts && (key === NO_ALBUM || counts[key] === 1)) return LOOSE;
+    return key;
+  }
+
   function artistKey(track) {
     return Genres.normaliseArtist(track.artist);
   }
 
-  function matches(track, q) {
+  function matches(track, q, counts) {
     // The genre chips belong to the Genres tab; browsing by artist or album
     // is its own axis rather than something stacked on top of a genre.
     if (facet === 'genre' && genre !== 'All' && track.tags.indexOf(genre) === -1) return false;
 
     if (picked) {
-      var key = picked.type === 'artist' ? artistKey(track) : albumKey(track);
+      var key = picked.type === 'artist' ? artistKey(track) : cardKey(track, counts);
       if (key !== picked.key) return false;
     }
 
@@ -636,7 +708,9 @@
           return !q || t.haystack.indexOf(q) !== -1;
         });
     } else {
-      view = tracks.filter(function (t) { return matches(t, q); });
+      var counts = settings.groupSingles && picked && picked.type === 'album'
+        ? countAlbums() : null;
+      view = tracks.filter(function (t) { return matches(t, q, counts); });
     }
 
     player.setQueue(view);
@@ -670,8 +744,11 @@
       }).sort(function (a, b) { return a.label.localeCompare(b.label); });
     }
 
+    var counts = type === 'album' && settings.groupSingles ? countAlbums() : null;
+    var singles = 0;   // tracks on the shared card that do have an album
+
     tracks.forEach(function (t) {
-      var key = type === 'artist' ? artistKey(t) : albumKey(t);
+      var key = type === 'artist' ? artistKey(t) : cardKey(t, counts);
       if (type === 'artist' && !key) return;   // no artist to group under
 
       var group = groups[key];
@@ -690,6 +767,12 @@
       if (group.ids.length < 6) group.ids.push(t.id);
       group.count++;
 
+      // Named below for what it holds, rather than after any one album in it.
+      if (key === LOOSE) {
+        if (t.album) singles++;
+        return;
+      }
+
       var name = type === 'artist' ? t.artist : t.album;
       var seen = group.names.filter(function (n) { return n.name === name; })[0];
       if (seen) seen.tracks++;
@@ -706,9 +789,15 @@
     });
 
     return Object.keys(groups).map(function (k) {
+      var group = groups[k];
+      if (k === LOOSE) {
+        group.label = singles ? 'Singles' : 'No album';
+        group.sub = singles && singles < group.count ? 'And tracks with no album' : '';
+        return group;
+      }
+
       // Named the way most of its tracks spell it, the first seen breaking a
       // tie - not after whichever edition happened to be read first.
-      var group = groups[k];
       var best = null;
       group.names.forEach(function (n) {
         if (!best || n.tracks > best.tracks) best = n;
@@ -841,12 +930,13 @@
 
   /* A line over the Albums grid on how far the tag reading has got. Until it
    * is done, albums are still sitting in No album, and a grid that has
-   * stopped changing looks the same whether reading is resting, has been
-   * refused, or is finished - so it says which, and offers a way on where
-   * there is one. */
+   * stopped changing looks the same whether reading is switched off,
+   * resting, refused or finished - so it says which, and offers a way on
+   * where there is one. */
   function renderBrowseNote() {
     var note = '';
     var action = '';
+    var toggle = '';
 
     if (facet === 'album' && !picked && tracks.length) {
       var unread = tracks.filter(function (t) { return !t.tagged; });
@@ -855,8 +945,11 @@
         var refused = unread.filter(function (t) { return enrichRefused[t.id]; }).length;
         note = 'Album names come from each file’s tags: ' +
           (tracks.length - unread.length) + ' of ' + tracks.length + ' read so far.';
+        toggle = reading ? 'Stop reading' : 'Start reading tags';
 
-        if (enrichStopped) {
+        if (!reading) {
+          note += ' Reading them is switched off, so it cannot get in the way of the music.';
+        } else if (enrichStopped) {
           note += ' Stopped, as Drive refused the last few.';
           action = 'Try again';
         } else if (enrichHeldUntil > Date.now()) {
@@ -878,19 +971,24 @@
           }
         }
       } else if (tracks.some(function (t) { return !t.album; })) {
-        note = 'Every track’s tags have been read, so what is left in No album ' +
-          'has no album name in its tags. Clicking a track’s genre can name ' +
-          'one for its whole folder.';
+        note = 'Every track’s tags have been read, so a track still without an ' +
+          'album has no album name in its tags. Clicking a track’s genre can ' +
+          'name one for its whole folder.';
       }
     }
 
     els.browseNoteText.textContent = note;
     els.browseScan.textContent = action;
     els.browseScan.hidden = !action;
+    els.browseRead.textContent = toggle;
+    els.browseRead.hidden = !toggle;
     els.browseNote.hidden = !note;
   }
 
   els.browseScan.addEventListener('click', scanNow);
+  els.browseRead.addEventListener('click', function () {
+    if (reading) stopReading(); else startReading();
+  });
 
   /* Decides which of the three panels - genre chips, browse grid, track list
    * - is on screen, and keeps them in step with the current facet. */
@@ -1337,10 +1435,14 @@
 
   /* ---------- tag dialog ---------- */
 
+  /* Works every track out again after an edit. Whether its tags have been
+   * read is not something an edit changes: taken from the tag alone, every
+   * file without one counted as unread again, and was downloaded again. */
   function retagAll() {
     tracks.forEach(function (t) {
       var cached = Store.cacheGet(t.id, t.modifiedTime);
       applyMetadata(t, cached ? cached.meta : null);
+      t.tagged = tagsRead(cached);
     });
     renderGenres();
     renderView();
@@ -1497,6 +1599,8 @@
   function openSettings() {
     els.setFolder.value = settings.folderId;
     els.setKey.value = settings.apiKey;
+    els.setAutoTags.checked = !!settings.autoTags;
+    els.setSingles.checked = !!settings.groupSingles;
     els.setdlg.hidden = false;
   }
 
@@ -1506,11 +1610,27 @@
   els.setSave.addEventListener('click', function () {
     var folderId = Drive.folderIdFrom(els.setFolder.value);
     var apiKey = els.setKey.value.trim();
+    var autoTags = els.setAutoTags.checked;
+    var groupSingles = els.setSingles.checked;
 
     if (!folderId || !apiKey) { toast('Need both a folder and a key.'); return; }
 
     var changed = folderId !== settings.folderId;
-    settings = Store.saveSettings({ folderId: folderId, apiKey: apiKey });
+
+    // Switching automatic reading on starts it now, and off stops it now;
+    // otherwise a Start or Stop from this visit stands.
+    if (autoTags !== !!settings.autoTags) {
+      reading = autoTags;
+      scanAll = false;
+    }
+    // The card being browsed may be one that no longer exists.
+    if (groupSingles !== !!settings.groupSingles && picked && picked.key === LOOSE) {
+      picked = null;
+    }
+
+    settings = Store.saveSettings({
+      folderId: folderId, apiKey: apiKey, autoTags: autoTags, groupSingles: groupSingles
+    });
     els.setdlg.hidden = true;
 
     if (changed) Store.clearCache();
@@ -1576,6 +1696,64 @@
       (names.length === 1 ? '' : 's') +
       (namelessCount ? ' (' + namelessCount + ' file(s) have no artist at all)' : '') + '.');
   });
+
+  /* Every track with the album it is filed under, to correct in bulk - a
+   * download that put a playlist's name where the album goes, say. Imported
+   * back, each album changed in the file is kept for that track, as if it
+   * had been typed into its tag dialog. */
+  els.setAlbums.addEventListener('click', function () {
+    if (!tracks.length) { toast('Nothing to export yet.'); return; }
+
+    var list = tracks.map(function (t) {
+      return {
+        id: t.id, file: t.fileName, artist: t.artist || '',
+        title: displayName(t), album: t.album || ''
+      };
+    });
+
+    // Album by album, so a playlist's worth of tracks sits together, and
+    // the tracks with none at the end.
+    list.sort(function (a, b) {
+      if (!a.album !== !b.album) return a.album ? -1 : 1;
+      return a.album.localeCompare(b.album) || a.artist.localeCompare(b.artist) ||
+        a.title.localeCompare(b.title);
+    });
+
+    var unread = tracks.filter(function (t) { return !t.tagged; }).length;
+
+    download('drive-player-albums.json', {
+      version: 2,
+      note: 'Change the album of any track filed under the wrong one, then ' +
+            'import this file from Settings. Only an album that differs from ' +
+            'the one here is applied, and an empty one is ignored; artist, ' +
+            'title and file are there to say which song each is.' +
+            (unread ? ' ' + unread + ' of these have not had their tags read ' +
+              'yet, so show no album even where their tags would name one.' : ''),
+      albums: list
+    });
+
+    toast('Exported ' + list.length + ' track' + (list.length === 1 ? '' : 's') +
+      (unread ? ', ' + unread + ' of them with tags not read yet' : '') + '.');
+  });
+
+  /* The albums from a filled-in album export that differ from what each
+   * track is filed under now. Matched by file id, which a rename does not
+   * change. */
+  function importAlbums(entries) {
+    var byId = Object.create(null);
+    tracks.forEach(function (t) { byId[t.id] = t; });
+
+    var changes = [];
+    entries.forEach(function (entry) {
+      if (!entry || typeof entry.id !== 'string' || typeof entry.album !== 'string') return;
+      var track = byId[entry.id];
+      var album = entry.album.trim();
+      if (track && album && album !== track.album) changes.push({ track: track, album: album });
+    });
+
+    if (changes.length) Store.setAlbums(changes);
+    return changes.length;
+  }
 
   els.setImport.addEventListener('click', function () { els.setFile.click(); });
 
@@ -1663,10 +1841,15 @@
 
       var artists = 0;
       var trackEdits = 0;
+      var albums = 0;
 
       if (data.playlists) Store.replacePlaylists(data.playlists);
 
-      if (data.artists || data.tracks) {
+      if (Array.isArray(data.albums)) {
+        // An album export. Checked first: it has neither of the keys below,
+        // and would otherwise be taken for the original bare map of edits.
+        albums = importAlbums(data.albums);
+      } else if (data.artists || data.tracks) {
         // Current format. Artist rules merge, so importing a file covering
         // part of the library never wipes work already done.
         if (data.artists) artists = Store.replaceArtistRules(data.artists, true);
@@ -1685,8 +1868,10 @@
       var parts = [];
       if (artists) parts.push(artists + ' artist rule' + (artists === 1 ? '' : 's'));
       if (trackEdits) parts.push(trackEdits + ' track edit' + (trackEdits === 1 ? '' : 's'));
+      if (albums) parts.push(albums + ' album change' + (albums === 1 ? '' : 's'));
       toast(parts.length ? 'Imported ' + parts.join(' and ') + '.'
-                         : 'That file had nothing to import.');
+          : Array.isArray(data.albums) ? 'No album in that file differs from the library.'
+          : 'That file had nothing to import.');
     }).catch(function () {
       toast('That file did not look like an export.');
     });
